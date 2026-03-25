@@ -1,0 +1,8 @@
+-r requirements.txt
+pytest
+pytest-cov
+mypy
+flake8
+black
+types-pika
+boto3-stubs[sqs,sns]

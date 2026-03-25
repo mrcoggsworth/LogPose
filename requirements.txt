@@ -1,0 +1,6 @@
+confluent-kafka
+pika
+boto3
+google-cloud-pubsub
+pydantic
+python-dotenv

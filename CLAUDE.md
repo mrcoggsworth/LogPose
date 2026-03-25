@@ -6,6 +6,15 @@ This file provides project-specific guidance for Claude Code. Update this file w
 
 The purpose of this project is to create a headless Security Orchestration Automation and Response platform utilizing modern infrastructure on OpenShift.
 
+Phase 1. Create the ingestion stage. The soar platform will only be a consumer of kafka, aws sns, gcp pub/sub and possibly other related event driven notification systems that will send alerts into the soar-lite project (codename LogPose) for consumption. From here in phase 1 the platform will need to queue each alert into a self manageing queue that can live through pod failures or restarts. The queue system I would prefer to use is the Rebbit MQ system as the code seems to be more easily understandable over Redis and should perform at the level I am trying to achieve.
+- Items I want to achieve before moving on to phase 2
+  - Build out the ingestion side of the platform to intake from multiple subscription platforms
+    - kafka
+    - aws sns
+    - gcp pub/sub
+  - Be able to create a suitable test to see an incoming message and what it looks like and what possibilities are possible for creating a router solution in Phase 2.
+  - I would like to be able to run tests prior to phase 2 execution planning so I can visually understand what is happening as my prior knowledge stems from building out backend api's without a queueing system.
+
 <!-- Expand more on the project and prompt claude only to build in sections -->
 
 ## Development Workflow
