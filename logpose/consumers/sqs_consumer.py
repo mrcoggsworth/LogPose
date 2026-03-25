@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from collections.abc import Callable
 
 import boto3
@@ -18,16 +17,19 @@ _POLL_WAIT_SECONDS = 20  # SQS long-poll duration (max 20s)
 _MAX_MESSAGES = 10
 
 
-class SnsConsumer(BaseConsumer):
-    """Consumes alerts delivered via AWS SNS → SQS using a long-poll loop.
+class SqsConsumer(BaseConsumer):
+    """Consumes alerts from an AWS SQS queue using a long-poll loop.
 
-    AWS SNS is a push-based system. The standard consumption pattern for
-    backend services is: SNS publishes to SQS, and this consumer polls SQS.
+    SQS is the direct event source for this consumer. Messages may arrive
+    via two paths:
+      - Published directly to the SQS queue
+      - Delivered by SNS (SNS wraps the payload in a Notification envelope
+        which this consumer automatically unwraps)
 
     Configuration via environment variables:
       AWS_REGION          — AWS region (e.g. us-east-1)
       AWS_ENDPOINT_URL    — override endpoint for LocalStack (local dev only)
-      SQS_QUEUE_URL       — URL of the SQS queue subscribed to the SNS topic
+      SQS_QUEUE_URL       — URL of the SQS queue to poll
     """
 
     def __init__(
@@ -53,7 +55,7 @@ class SnsConsumer(BaseConsumer):
         self._sqs = boto3.client("sqs", **kwargs)
         self._running = True
         logger.info(
-            "SnsConsumer connected to SQS queue %s (endpoint=%s)",
+            "SqsConsumer connected to queue %s (endpoint=%s)",
             self._queue_url,
             self._endpoint_url or "AWS",
         )
@@ -63,7 +65,7 @@ class SnsConsumer(BaseConsumer):
             raise RuntimeError("Consumer is not connected. Call connect() first.")
 
         self._running = True
-        logger.info("SnsConsumer poll loop started")
+        logger.info("SqsConsumer poll loop started")
 
         try:
             while self._running:
@@ -78,7 +80,7 @@ class SnsConsumer(BaseConsumer):
                 for msg in messages:
                     self._handle_message(msg, callback)
         except KeyboardInterrupt:
-            logger.info("SnsConsumer poll loop interrupted")
+            logger.info("SqsConsumer poll loop interrupted")
 
     def _handle_message(self, msg: dict, callback: Callable[[Alert], None]) -> None:
         body_str = msg.get("Body", "{}")
@@ -88,7 +90,10 @@ class SnsConsumer(BaseConsumer):
             logger.error("Failed to parse SQS message body: %s", exc)
             return
 
-        # SNS wraps the original message; unwrap if present
+        # SNS delivers to SQS by wrapping the original payload in a Notification
+        # envelope: {"Type": "Notification", "Message": "<json string>", ...}
+        # Unwrap it so raw_payload always contains the original event directly.
+        # Direct SQS messages (no SNS envelope) are used as-is.
         if body.get("Type") == "Notification" and "Message" in body:
             try:
                 payload: dict = json.loads(body["Message"])
@@ -98,16 +103,16 @@ class SnsConsumer(BaseConsumer):
             payload = body
 
         alert = Alert(
-            source="sns",
+            source="sqs",
             raw_payload=payload,
             metadata={
                 "message_id": msg.get("MessageId"),
                 "receipt_handle": msg.get("ReceiptHandle"),
-                "sns_topic_arn": body.get("TopicArn"),
-                "sns_subject": body.get("Subject"),
+                "topic_arn": body.get("TopicArn"),
+                "subject": body.get("Subject"),
             },
         )
-        logger.info("Received alert %s from SNS/SQS", alert.id)
+        logger.info("Received alert %s from SQS queue=%s", alert.id, self._queue_url)
         callback(alert)
 
         # Acknowledge (delete) the message after successful processing
@@ -123,4 +128,4 @@ class SnsConsumer(BaseConsumer):
     def disconnect(self) -> None:
         self._running = False
         self._sqs = None
-        logger.info("SnsConsumer disconnected")
+        logger.info("SqsConsumer disconnected")

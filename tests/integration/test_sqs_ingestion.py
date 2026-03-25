@@ -1,8 +1,11 @@
-"""Integration test: SNS (LocalStack) → SnsConsumer → RabbitMQ alerts queue.
+"""Integration test: SQS (LocalStack) → SqsConsumer → RabbitMQ alerts queue.
+
+Messages are seeded via SNS → SQS (the standard delivery path). The consumer
+under test is SqsConsumer, which polls the SQS queue directly.
 
 Run with Docker Compose services up:
   docker compose -f docker/docker-compose.yml up -d
-  pytest tests/integration/test_sns_ingestion.py -v -m integration
+  pytest tests/integration/test_sqs_ingestion.py -v -m integration
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ import time
 
 import pytest
 
-from logpose.consumers.sns_consumer import SnsConsumer
+from logpose.consumers.sqs_consumer import SqsConsumer
 from logpose.models.alert import Alert
 from logpose.queue.rabbitmq import RabbitMQPublisher
 
@@ -33,7 +36,7 @@ def rabbitmq_channel(rabbitmq_connection):
     return rabbitmq_connection.channel()
 
 
-def test_sns_message_becomes_alert_in_rabbitmq(
+def test_sqs_message_becomes_alert_in_rabbitmq(
     localstack_clients, rabbitmq_channel
 ) -> None:
     sns_client, _sqs_client = localstack_clients
@@ -49,14 +52,14 @@ def test_sns_message_becomes_alert_in_rabbitmq(
     publisher = RabbitMQPublisher(url=RABBITMQ_URL)
     publisher.connect()
 
-    consumer = SnsConsumer(
+    consumer = SqsConsumer(
         queue_url=SQS_QUEUE_URL,
         region=AWS_REGION,
         endpoint_url=AWS_ENDPOINT,
     )
 
     def on_alert(alert: Alert) -> None:
-        print("\n--- Alert received from SNS ---")
+        print("\n--- Alert received from SQS ---")
         print(f"  id         : {alert.id}")
         print(f"  source     : {alert.source}")
         print(f"  received_at: {alert.received_at}")
@@ -85,7 +88,7 @@ def test_sns_message_becomes_alert_in_rabbitmq(
                 pass
         consumer.disconnect()
 
-    # Publish a test message to SNS — it will be forwarded to SQS
+    # Seed the SQS queue via SNS — SNS delivers wrapped in a Notification envelope
     sns_client.publish(
         TopicArn=SNS_TOPIC_ARN,
         Message=json.dumps(test_payload),
@@ -98,12 +101,12 @@ def test_sns_message_becomes_alert_in_rabbitmq(
 
     publisher.disconnect()
 
-    assert received_alerts, "No alerts were received from SNS/SQS within the timeout"
+    assert received_alerts, "No alerts were received from SQS within the timeout"
     alert = received_alerts[0]
-    assert alert.source == "sns"
+    assert alert.source == "sqs"
     assert alert.raw_payload.get("rule") == "privilege-escalation"
 
     queued = drain_rabbitmq_queue(rabbitmq_channel)
-    assert any(q["source"] == "sns" for q in queued), (
+    assert any(q["source"] == "sqs" for q in queued), (
         "Alert was not found in RabbitMQ alerts queue"
     )
