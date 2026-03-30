@@ -10,6 +10,8 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 from logpose.consumers.base import BaseConsumer
 from logpose.models.alert import Alert
 
+from typing import Any
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,7 +91,7 @@ class KafkaConsumer(BaseConsumer):
             return
 
         try:
-            payload: dict = json.loads(raw_value.decode("utf-8"))
+            payload: dict[str, Any] = json.loads(raw_value.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             logger.error(
                 "Failed to decode Kafka message on topic %s: %s", msg.topic(), exc

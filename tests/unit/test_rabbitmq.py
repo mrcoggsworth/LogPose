@@ -1,4 +1,5 @@
 """Unit tests for the RabbitMQ publisher (mocked pika)."""
+from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,19 +12,19 @@ from logpose.queue.rabbitmq import RabbitMQPublisher, QUEUE_NAME
 RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
 
 
-@pytest.fixture()
-def mock_pika():
+@pytest.fixture()  # type: ignore[misc]
+def mock_pika() -> Generator[tuple[MagicMock, MagicMock, MagicMock], None, None]:
     """Patch pika.BlockingConnection so no real broker is needed."""
     with patch("logpose.queue.rabbitmq.pika.BlockingConnection") as mock_conn_cls:
-        mock_conn = MagicMock()
-        mock_channel = MagicMock()
+        mock_conn: MagicMock = MagicMock()
+        mock_channel: MagicMock = MagicMock()
         mock_conn.channel.return_value = mock_channel
         mock_conn.is_closed = False
         mock_conn_cls.return_value = mock_conn
         yield mock_conn_cls, mock_conn, mock_channel
 
 
-def test_connect_declares_durable_queue(mock_pika) -> None:
+def test_connect_declares_durable_queue(mock_pika: tuple) -> None:
     _, _, mock_channel = mock_pika
     publisher = RabbitMQPublisher(url=RABBITMQ_URL)
     publisher.connect()
