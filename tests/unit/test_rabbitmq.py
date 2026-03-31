@@ -24,7 +24,7 @@ def mock_pika() -> Generator[tuple[MagicMock, MagicMock, MagicMock], None, None]
         yield mock_conn_cls, mock_conn, mock_channel
 
 
-def test_connect_declares_durable_queue(mock_pika: tuple) -> None:
+def test_connect_declares_durable_queue(mock_pika: tuple[MagicMock, MagicMock, MagicMock]) -> None:
     _, _, mock_channel = mock_pika
     publisher = RabbitMQPublisher(url=RABBITMQ_URL)
     publisher.connect()
@@ -34,7 +34,7 @@ def test_connect_declares_durable_queue(mock_pika: tuple) -> None:
     )
 
 
-def test_publish_sends_json_body(mock_pika) -> None:
+def test_publish_sends_json_body(mock_pika: tuple[MagicMock, MagicMock, MagicMock]) -> None:
     _, _, mock_channel = mock_pika
     alert = Alert(source="kafka", raw_payload={"rule": "brute-force"})
 
@@ -56,7 +56,7 @@ def test_publish_raises_without_connect() -> None:
         publisher.publish(alert)
 
 
-def test_disconnect_closes_connection(mock_pika) -> None:
+def test_disconnect_closes_connection(mock_pika: tuple[MagicMock, MagicMock, MagicMock]) -> None:
     _, mock_conn, _ = mock_pika
     publisher = RabbitMQPublisher(url=RABBITMQ_URL)
     publisher.connect()
@@ -65,7 +65,7 @@ def test_disconnect_closes_connection(mock_pika) -> None:
     mock_conn.close.assert_called_once()
 
 
-def test_context_manager_connects_and_disconnects(mock_pika) -> None:
+def test_context_manager_connects_and_disconnects(mock_pika: tuple[MagicMock, MagicMock, MagicMock]) -> None:
     _, mock_conn, mock_channel = mock_pika
     alert = Alert(source="pubsub", raw_payload={"x": 1})
 

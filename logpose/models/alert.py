@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class Alert(BaseModel):
+class Alert(BaseModel): # pydantic model for normalized alert data
     """Normalized alert model shared across all ingestion sources."""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
