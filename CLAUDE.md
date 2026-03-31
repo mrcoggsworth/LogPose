@@ -6,7 +6,8 @@ This file provides project-specific guidance for Claude Code. Update this file w
 
 The purpose of this project is to create a headless Security Orchestration Automation and Response platform utilizing modern infrastructure on OpenShift.
 
-Phase 1. Create the ingestion stage. The soar platform will only be a consumer of kafka, aws sns, gcp pub/sub and possibly other related event driven notification systems that will send alerts into the soar-lite project (codename LogPose) for consumption. From here in phase 1 the platform will need to queue each alert into a self manageing queue that can live through pod failures or restarts. The queue system I would prefer to use is the Rebbit MQ system as the code seems to be more easily understandable over Redis and should perform at the level I am trying to achieve.
+### Phase I. 
+Create the ingestion stage. The soar platform will only be a consumer of kafka, aws sns, gcp pub/sub and possibly other related event driven notification systems that will send alerts into the soar-lite project (codename LogPose) for consumption. From here in phase 1 the platform will need to queue each alert into a self manageing queue that can live through pod failures or restarts. The queue system I would prefer to use is the Rebbit MQ system as the code seems to be more easily understandable over Redis and should perform at the level I am trying to achieve.
 - Items I want to achieve before moving on to phase 2
   - Build out the ingestion side of the platform to intake from multiple subscription platforms
     - kafka
@@ -14,6 +15,25 @@ Phase 1. Create the ingestion stage. The soar platform will only be a consumer o
     - gcp pub/sub
   - Be able to create a suitable test to see an incoming message and what it looks like and what possibilities are possible for creating a router solution in Phase 2.
   - I would like to be able to run tests prior to phase 2 execution planning so I can visually understand what is happening as my prior knowledge stems from building out backend api's without a queueing system.
+
+### Phase II.
+Create the routing stage of the project. Now that the ingestion part is done it is now time to route registered events in the queue that are consumed by different consumers (kafka, aws sqs, and gcp pub/sub) to the correct runbook as code. Each runbook as code will run as a separate pod so that it has segregation between different pieces of the headless soar project. This way if an error happens it can report it back to the router section which can then either reprocess the event or send it potentially to a dlq to process it later. Use rabbitmq to send to a dlq like area if possible. Once the data is enriched by the runbook it will need to send it back from the pod it was run in back to the routing infrastructure so that it can be sent out to its proper logging destination. We will stop there though as that will be apart of Phase IV. and we are chunking the project into separate phases.
+- Items I want to achieve before moving on to phase 2
+  - routing from rabbitmq queued events to proper runbooks
+    - routes can have a parent route with sub routes
+      - example: parent route could be "cloud" and a child route could be "aws" or "gcp" and each child route can be different runbooks
+      - example: parent route could be "crowdstrike" and a child route could be "malware execution" or "confirmed downloaded malicious file"
+      - these are not specific routes currently but could be in the future
+  - routing code needs to be modular so that you can easily add more routes in the future for more use cases
+  - routing needs to be simple enough for a junior developer to understand but sophisticated enough to handle efficient route handling and saftey to not send events to the incorrect location.
+  - include a test route in the initial phase II to be able to use for tests as well as an operational example.
+  - build out routes for cloud that lead to aws and gcp then route again to the logging type.
+    - cloud -> aws -> cloudtrail
+    - cloud -> aws -> guardduty
+    - cloud -> aws -> eks (kubernetes)
+    - cloud -> gcp -> event_audit
+  - at least one very small test aws cloudtrail runbook and one very small gcp runbook to use as tests. Additional code for data enrichment will be added later.
+
 
 <!-- Expand more on the project and prompt claude only to build in sections -->
 

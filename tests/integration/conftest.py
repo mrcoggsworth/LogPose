@@ -90,6 +90,36 @@ def drain_rabbitmq_queue(channel, queue: str = "alerts") -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Phase II — routing fixtures
+# ---------------------------------------------------------------------------
+
+from logpose.queue.queues import ALL_RUNBOOK_QUEUES, QUEUE_DLQ, QUEUE_ENRICHED  # noqa: E402
+
+
+@pytest.fixture()
+def phase2_rabbitmq_channel(rabbitmq_connection: pika.BlockingConnection):
+    """Per-test RabbitMQ channel with all Phase II queues declared.
+
+    Used by routing integration tests. Existing consumer tests define their
+    own channel fixtures and are unaffected by this one.
+    """
+    channel = rabbitmq_connection.channel()
+    for queue in (*ALL_RUNBOOK_QUEUES, QUEUE_DLQ, QUEUE_ENRICHED):
+        channel.queue_declare(queue=queue, durable=True)
+    yield channel
+    channel.close()
+
+
+def purge_queues(channel, *queue_names: str) -> None:
+    """Purge named queues. Silently ignores queues that do not exist."""
+    for queue in queue_names:
+        try:
+            channel.queue_purge(queue=queue)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Kafka helpers
 # ---------------------------------------------------------------------------
 
