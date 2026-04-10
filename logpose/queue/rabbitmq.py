@@ -60,7 +60,7 @@ class RabbitMQPublisher:
         body = alert.model_dump_json().encode()
         properties = pika.BasicProperties(
             content_type="application/json",
-            delivery_mode=pika.DeliveryMode.Persistent,
+            delivery_mode=pika.DeliveryMode.Persistent,  # type: ignore[attr-defined]
         )
 
         try:

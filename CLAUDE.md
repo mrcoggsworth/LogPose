@@ -34,6 +34,11 @@ Create the routing stage of the project. Now that the ingestion part is done it 
     - cloud -> gcp -> event_audit
   - at least one very small test aws cloudtrail runbook and one very small gcp runbook to use as tests. Additional code for data enrichment will be added later.
 
+### Phase III.
+Now that we have an eriched data alert and we send it back to the main base, its time to ship out the enriched alert to a splunk index that ingests all the alerts for review.
+- if the alert is enriched or not it needs to be able to forward to splunk
+- the splunk event should be sent via the splunk sdk using industry best practices when it comes to sending the alerts.
+
 
 <!-- Expand more on the project and prompt claude only to build in sections -->
 

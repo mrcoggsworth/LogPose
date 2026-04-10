@@ -4,3 +4,5 @@ boto3
 google-cloud-pubsub
 pydantic
 python-dotenv
+requests
+splunk-sdk
