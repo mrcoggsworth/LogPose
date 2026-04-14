@@ -17,7 +17,7 @@
 
 <br />
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.13%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.x-FF6600?style=flat-square&logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
 [![OpenShift](https://img.shields.io/badge/OpenShift-Ready-EE0000?style=flat-square&logo=redhatopenshift&logoColor=white)](https://www.redhat.com/en/technologies/cloud-computing/openshift)
 [![License](https://img.shields.io/badge/License-MIT-22863A?style=flat-square)](LICENSE)
@@ -105,6 +105,15 @@ Each stage is a separate pod. Each pod communicates through durable queues. A cr
 │   sourcetype: logpose:enriched_alert                            │
 │   sourcetype: logpose:dlq_alert                                 │
 └─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    DASHBOARD (all phases)                       │
+│                                                                 │
+│   All pipeline pods emit to [logpose.metrics] queue             │
+│   Dashboard pod drains queue → MetricsStore (SQLite-backed)     │
+│   FastAPI backend  →  browser UI at :8080                       │
+│   Live queue depths via RabbitMQ Management API                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 Every arrow in this diagram is a **durable RabbitMQ queue**. Pod restarts are safe. Message delivery is persistent. Nothing gets lost.
@@ -124,6 +133,7 @@ Every arrow in this diagram is a **durable RabbitMQ queue**. Pod restarts are sa
 | **Splunk HEC forwarding** | Batched HTTP Event Collector with exponential backoff retry |
 | **Type-safe models** | Pydantic v2 frozen models for `Alert` and `EnrichedAlert` |
 | **OpenShift-ready** | Stateless pods, environment-variable configuration, Docker image included |
+| **Observability dashboard** | FastAPI backend + browser UI at :8080 — live queue depths, pipeline counters, route registry, runbook status |
 | **Extensive test coverage** | 14 unit test files + 7 integration tests driven by Docker Compose |
 
 ---
@@ -136,15 +146,16 @@ Every arrow in this diagram is a **durable RabbitMQ queue**. Pod restarts are sa
 4. [Configuration](#configuration)
 5. [Running Locally](#running-locally)
 6. [Running the Full Stack (Docker Compose)](#running-the-full-stack-docker-compose)
-7. [Deploying to OpenShift](#deploying-to-openshift)
-8. [Project Structure](#project-structure)
-9. [Data Models](#data-models)
-10. [Adding a New Route](#adding-a-new-route)
-11. [Adding a New Runbook](#adding-a-new-runbook)
-12. [Testing](#testing)
-13. [Development Workflow](#development-workflow)
-14. [Contributing](#contributing)
-15. [Roadmap](#roadmap)
+7. [LogPose Dashboard](#logpose-dashboard)
+8. [Deploying to OpenShift](#deploying-to-openshift)
+9. [Project Structure](#project-structure)
+10. [Data Models](#data-models)
+11. [Adding a New Route](#adding-a-new-route)
+12. [Adding a New Runbook](#adding-a-new-runbook)
+13. [Testing](#testing)
+14. [Development Workflow](#development-workflow)
+15. [Contributing](#contributing)
+16. [Roadmap](#roadmap)
 
 ---
 
@@ -154,7 +165,7 @@ Every arrow in this diagram is a **durable RabbitMQ queue**. Pod restarts are sa
 
 | Requirement | Minimum Version | Notes |
 |-------------|----------------|-------|
-| Python | 3.11+ | Uses `match` statements, `tomllib`, modern type hints |
+| Python | 3.13+ | Uses `match` statements, `tomllib`, modern type hints |
 | Docker | 24+ | For the integration test stack |
 | Docker Compose | v2 (plugin) | `docker compose` not `docker-compose` |
 | `librdkafka` | 2.x | Required by `confluent-kafka`; see OS-specific notes below |
@@ -240,7 +251,7 @@ cd LogPose
 ### 2. Create a Virtual Environment
 
 ```bash
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -299,6 +310,13 @@ SPLUNK_HEC_URL=https://splunk.example.com:8088/services/collector
 SPLUNK_HEC_TOKEN=your-hec-token-here
 SPLUNK_INDEX=main
 SPLUNK_BATCH_SIZE=50        # Optional, default is 50 events per POST
+
+# ─── Dashboard (optional, enables the observability UI) ───────────────────────
+DASHBOARD_HOST=0.0.0.0
+DASHBOARD_PORT=8080
+RABBITMQ_MGMT_URL=http://localhost:15672
+RABBITMQ_MGMT_USER=guest
+RABBITMQ_MGMT_PASS=guest
 ```
 
 ---
@@ -386,6 +404,14 @@ python -m logpose.forwarder_main
 
 This starts two threads: one draining the `enriched` queue and one draining the `alerts.dlq` queue, both posting to Splunk HEC.
 
+### Dashboard — Start the Observability UI
+
+```bash
+python -m logpose.dashboard_main
+```
+
+Open [http://localhost:8080](http://localhost:8080) in your browser. The dashboard polls the backend every 10 seconds and shows live queue depths, accumulated pipeline counters, registered routes, and runbook status. Counters are persisted to SQLite and survive pod restarts.
+
 ### RabbitMQ Management UI
 
 With Docker Compose running, open [http://localhost:15672](http://localhost:15672) in your browser.
@@ -429,6 +455,60 @@ docker compose -f docker/docker-compose.yml down -v
 
 ---
 
+## LogPose Dashboard
+
+The LogPose Dashboard is a real-time observability interface for the entire pipeline. It runs as a standalone pod and requires no changes to your existing pipeline code — every pipeline component emits lightweight metric events to a dedicated RabbitMQ queue (`logpose.metrics`) that the dashboard consumes in the background.
+
+### Components
+
+**Backend — FastAPI (`logpose/dashboard/`)**
+
+| Module | Purpose |
+|--------|---------|
+| `app.py` | Uvicorn-served FastAPI app; exposes all `/api/*` endpoints and serves the browser UI at `/` |
+| `metrics_consumer.py` | Background thread that drains the `logpose.metrics` RabbitMQ queue and increments in-memory counters |
+| `metrics_store.py` | Thread-safe counter store backed by SQLite; flushes every 60 seconds and restores on restart |
+| `rabbitmq_api.py` | HTTP client for the RabbitMQ Management API; fetches live queue depths, rates, and consumer counts |
+| `routes_reader.py` | Reads the live `RouteRegistry` and discovered runbook classes to populate the routes/runbooks API endpoints |
+
+**Frontend — Browser UI**
+
+The browser UI is a single-page app served directly from the FastAPI backend at `http://localhost:8080`. It polls the backend every 10 seconds and displays:
+
+- **Stat cards** — total alerts ingested, routes matched, runbook successes/errors, DLQ count
+- **Queue depth table** — live message counts and consumer counts for every RabbitMQ queue
+- **Pipeline counters** — accumulated metrics broken down by event type
+- **Registered routes** — all active route matchers from the `RouteRegistry`
+- **Runbook status** — discovered runbook classes and their source queues
+
+**Metrics emitter (`logpose/metrics/emitter.py`)**
+
+`MetricsEmitter` is embedded in consumers, the router, and runbooks. It fires a small JSON event to `logpose.metrics` on every significant pipeline action. It is fully wrapped in `try/except` — if RabbitMQ is unavailable the metric is silently dropped and the main pipeline is never affected.
+
+### Running the Dashboard Locally
+
+```bash
+# With the Docker Compose stack already running:
+python -m logpose.dashboard_main
+```
+
+The dashboard is available at [http://localhost:8080](http://localhost:8080).
+
+### Dashboard Environment Variables
+
+```dotenv
+# ─── Dashboard ────────────────────────────────────────────────────────────────
+DASHBOARD_HOST=0.0.0.0          # Bind address (default: 0.0.0.0)
+DASHBOARD_PORT=8080             # HTTP port (default: 8080)
+RABBITMQ_MGMT_URL=http://localhost:15672   # RabbitMQ Management API base URL
+RABBITMQ_MGMT_USER=guest        # Management API username
+RABBITMQ_MGMT_PASS=guest        # Management API password
+```
+
+For the full dashboard guide — including OpenShift deployment, SQLite persistence details, fault-tolerance behavior, and a complete UI reference — see [docs/dashboard/logpose-dashboard-guide.md](docs/dashboard/logpose-dashboard-guide.md).
+
+---
+
 ## Deploying to OpenShift
 
 LogPose is designed from the ground up for OpenShift. Each component maps to a separate Deployment or Pod.
@@ -443,7 +523,7 @@ docker build -t your-registry/logpose:latest .
 docker push your-registry/logpose:latest
 ```
 
-The `Dockerfile` installs `librdkafka` automatically and produces a slim Python 3.11 image.
+The `Dockerfile` installs `librdkafka` automatically and produces a slim Python 3.13 image.
 
 ### Pod Layout
 
@@ -476,6 +556,10 @@ Namespace: logpose
 │
 ├── Deployment: logpose-forwarder
 │   └── command: python -m logpose.forwarder_main
+│
+├── Deployment: logpose-dashboard
+│   └── command: python -m logpose.dashboard_main
+│   └── port: 8080 (expose via Service + Route)
 │
 └── StatefulSet: rabbitmq
     └── With PersistentVolumeClaim for queue durability
@@ -550,8 +634,19 @@ LogPose/
 │   │   ├── enriched_forwarder.py    # Enriched alert → Splunk thread
 │   │   └── dlq_forwarder.py         # DLQ alert → Splunk thread
 │   │
+│   ├── metrics/                     # Pipeline metrics emission
+│   │   └── emitter.py               # MetricsEmitter — fire-and-forget to logpose.metrics queue
+│   │
+│   ├── dashboard/                   # Dashboard backend (FastAPI + browser UI)
+│   │   ├── app.py                   # FastAPI app — all /api/* endpoints + serves index.html
+│   │   ├── metrics_consumer.py      # Background thread draining logpose.metrics queue
+│   │   ├── metrics_store.py         # Thread-safe SQLite-backed counter store
+│   │   ├── rabbitmq_api.py          # RabbitMQ Management API HTTP client
+│   │   └── routes_reader.py         # Reads RouteRegistry + discovers runbook classes
+│   │
 │   ├── router_main.py               # Entry point: Router pod
-│   └── forwarder_main.py            # Entry point: Forwarder pod
+│   ├── forwarder_main.py            # Entry point: Forwarder pod
+│   └── dashboard_main.py            # Entry point: Dashboard pod (Uvicorn on :8080)
 │
 ├── tests/
 │   ├── unit/                        # 14 test files — fully mocked, no Docker required
@@ -805,9 +900,13 @@ The `docs/tests/` directory contains in-depth testing walkthroughs for every com
 - [Route Matchers Walkthrough](docs/tests/routing/route-matchers-testing-walkthrough.md)
 - [Router Walkthrough](docs/tests/routing/router-testing-walkthrough.md)
 
+**Models**
+- [EnrichedAlert Model Walkthrough](docs/tests/models/enriched-alert-testing-walkthrough.md)
+
 **Runbooks**
 - [CloudTrail Runbook Walkthrough](docs/tests/runbooks/cloudtrail-runbook-testing-walkthrough.md)
 - [GCP Event Audit Runbook Walkthrough](docs/tests/runbooks/gcp-event-audit-runbook-testing-walkthrough.md)
+- [Test Runbook Walkthrough](docs/tests/runbooks/test-runbook-testing-walkthrough.md)
 
 **Splunk Forwarder (Phase III)**
 - [SplunkHECClient Walkthrough](docs/tests/forwarder/splunk-client-testing-walkthrough.md)
@@ -888,7 +987,7 @@ Contributions are welcome. LogPose is intentionally structured to be easy to ext
 | **Phase IV** | Planned | Additional alert output destinations (e.g., PagerDuty, Slack, JIRA, webhook) |
 | **Phase V** | Planned | Runbook expansion — CrowdStrike, Microsoft Defender, AWS Security Hub, Azure Sentinel |
 | **Phase VI** | Planned | Observability — metrics (Prometheus), structured logging, distributed tracing (OpenTelemetry) |
-| **Phase VII** | Planned | Web UI for runbook management, route visualization, and DLQ review |
+| **Dashboard** | Complete | Real-time observability UI — queue depths, pipeline counters, route registry, runbook status (FastAPI + browser at :8080) |
 
 ---
 
