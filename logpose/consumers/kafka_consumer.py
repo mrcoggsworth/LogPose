@@ -8,6 +8,7 @@ from collections.abc import Callable
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 
 from logpose.consumers.base import BaseConsumer
+from logpose.metrics.emitter import MetricsEmitter
 from logpose.models.alert import Alert
 
 from typing import Any
@@ -29,6 +30,7 @@ class KafkaConsumer(BaseConsumer):
         bootstrap_servers: str | None = None,
         group_id: str | None = None,
         topics: list[str] | None = None,
+        emitter: MetricsEmitter | None = None,
     ) -> None:
         self._bootstrap_servers = bootstrap_servers or os.environ[
             "KAFKA_BOOTSTRAP_SERVERS"
@@ -37,6 +39,7 @@ class KafkaConsumer(BaseConsumer):
         self._topics = topics or os.environ["KAFKA_TOPICS"].split(",")
         self._consumer: Consumer | None = None
         self._running = False
+        self._emitter = emitter
 
     def connect(self) -> None:
         config = {
@@ -109,6 +112,8 @@ class KafkaConsumer(BaseConsumer):
             },
         )
         logger.info("Received alert %s from Kafka topic=%s", alert.id, msg.topic())
+        if self._emitter is not None:
+            self._emitter.emit("alert_ingested", {"source": "kafka"})
         callback(alert)
 
     def disconnect(self) -> None:

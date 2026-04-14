@@ -79,3 +79,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  logpose-dashboard:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-dashboard
+    command: ["python", "-m", "logpose.dashboard_main"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_MGMT_URL: http://rabbitmq:15672
+      METRICS_DB_PATH: /tmp/logpose_metrics.db
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: "8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/overview"]
+      interval: 15s
+      timeout: 5s
+      retries: 5

@@ -558,12 +558,16 @@ LogPose/
 │   └── integration/                 # 7 test files — require Docker Compose stack
 │
 ├── docs/
+│   ├── web-ui/                      # Web UI guides
+│   │   └── rabbitmq-management-ui.md
 │   └── tests/                       # Testing walkthroughs for every component
 │       ├── consumers/
 │       ├── queue/
 │       ├── routing/
 │       ├── models/
-│       └── runbooks/
+│       ├── runbooks/
+│       ├── forwarder/               # Phase III forwarder walkthroughs
+│       └── integration/             # Integration test walkthroughs
 │
 ├── docker/
 │   └── docker-compose.yml           # Full local dev stack
@@ -782,15 +786,31 @@ black logpose/ tests/
 
 The `docs/tests/` directory contains in-depth testing walkthroughs for every component, written for developers who are new to event-driven architectures:
 
+**Web UI**
+- [RabbitMQ Management UI Guide](docs/web-ui/rabbitmq-management-ui.md)
+
+**Consumers**
 - [Kafka Consumer Walkthrough](docs/tests/consumers/kafka-testing-walkthrough.md)
 - [SQS Consumer Walkthrough](docs/tests/consumers/sqs-testing-walkthroughs.md)
 - [Pub/Sub Consumer Walkthrough](docs/tests/consumers/pubsub-testing-walkthrough.md)
+
+**Queue**
 - [RabbitMQ Publisher Walkthrough](docs/tests/queue/rabbitmq-publisher-testing-walkthrough.md)
 - [RabbitMQ Consumer Walkthrough](docs/tests/queue/rabbitmq-consumer-testing-walkthrough.md)
+
+**Routing**
 - [Route Matchers Walkthrough](docs/tests/routing/route-matchers-testing-walkthrough.md)
 - [Router Walkthrough](docs/tests/routing/router-testing-walkthrough.md)
+
+**Runbooks**
 - [CloudTrail Runbook Walkthrough](docs/tests/runbooks/cloudtrail-runbook-testing-walkthrough.md)
 - [GCP Event Audit Runbook Walkthrough](docs/tests/runbooks/gcp-event-audit-runbook-testing-walkthrough.md)
+
+**Splunk Forwarder (Phase III)**
+- [SplunkHECClient Walkthrough](docs/tests/forwarder/splunk-client-testing-walkthrough.md)
+- [EnrichedAlertForwarder Walkthrough](docs/tests/forwarder/enriched-forwarder-testing-walkthrough.md)
+- [DLQForwarder Walkthrough](docs/tests/forwarder/dlq-forwarder-testing-walkthrough.md)
+- [Splunk Forwarding Integration Walkthrough](docs/tests/integration/splunk-forwarding-testing-walkthrough.md)
 
 ---
 

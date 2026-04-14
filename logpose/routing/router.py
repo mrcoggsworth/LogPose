@@ -8,6 +8,7 @@ from typing import Any
 import pika
 import pika.exceptions
 
+from logpose.metrics.emitter import MetricsEmitter
 from logpose.models.alert import Alert
 from logpose.queue.queues import QUEUE_ALERTS, QUEUE_DLQ
 from logpose.queue.rabbitmq import RabbitMQPublisher
@@ -32,10 +33,12 @@ class Router:
         self,
         registry: RouteRegistry,
         url: str | None = None,
+        emitter: MetricsEmitter | None = None,
     ) -> None:
         self._registry = registry
         self._consumer = RabbitMQConsumer(queue=QUEUE_ALERTS, url=url)
         self._publisher = RabbitMQPublisher(url=url)
+        self._emitter = emitter
 
     def run(self) -> None:
         """Connect and start the blocking consume/route loop."""
@@ -94,6 +97,8 @@ class Router:
                 route.name,
                 route.queue,
             )
+            if self._emitter is not None:
+                self._emitter.emit("route_matched", {"route": route.name})
         except Exception as exc:
             logger.error(
                 "Failed to publish alert %s to route '%s': %s — sending to DLQ.",
@@ -137,6 +142,8 @@ class Router:
                 properties=properties,
             )
             logger.info("Published alert %s to DLQ (reason=%s)", alert.id, reason)
+            if self._emitter is not None:
+                self._emitter.emit("dlq_enqueued", {"reason": reason})
         except Exception as exc:
             logger.error(
                 "CRITICAL: Could not publish alert %s to DLQ: %s",

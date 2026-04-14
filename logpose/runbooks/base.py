@@ -3,6 +3,7 @@ from __future__ import annotations
 import abc
 import logging
 
+from logpose.metrics.emitter import MetricsEmitter
 from logpose.models.alert import Alert
 from logpose.models.enriched_alert import EnrichedAlert
 from logpose.queue.queues import QUEUE_ENRICHED
@@ -29,9 +30,14 @@ class BaseRunbook(abc.ABC):
     source_queue: str
     runbook_name: str
 
-    def __init__(self, url: str | None = None) -> None:
+    def __init__(
+        self,
+        url: str | None = None,
+        emitter: MetricsEmitter | None = None,
+    ) -> None:
         self._consumer = RabbitMQConsumer(queue=self.source_queue, url=url)
         self._publisher = RabbitMQPublisher(url=url)
+        self._emitter = emitter
 
     @abc.abstractmethod
     def enrich(self, alert: Alert) -> EnrichedAlert:
@@ -65,7 +71,21 @@ class BaseRunbook(abc.ABC):
 
     def _handle_alert(self, alert: Alert) -> None:
         """Call enrich() and publish the EnrichedAlert to the enriched queue."""
-        enriched = self.enrich(alert)
+        try:
+            enriched = self.enrich(alert)
+        except Exception as exc:
+            if self._emitter is not None:
+                self._emitter.emit(
+                    "runbook_error",
+                    {"runbook": self.runbook_name, "error": str(exc)},
+                )
+            logger.error(
+                "Runbook '%s' enrich() raised unexpectedly for alert %s: %s",
+                self.runbook_name,
+                alert.id,
+                exc,
+            )
+            return
 
         body = enriched.model_dump_json().encode()
         import pika
@@ -82,6 +102,10 @@ class BaseRunbook(abc.ABC):
             body=body,
             properties=properties,
         )
+
+        if self._emitter is not None:
+            self._emitter.emit("runbook_success", {"runbook": self.runbook_name})
+
         logger.info(
             "Runbook '%s' enriched alert %s -> enriched queue",
             self.runbook_name,

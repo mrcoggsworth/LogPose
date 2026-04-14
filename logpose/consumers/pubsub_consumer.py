@@ -8,6 +8,7 @@ from google.cloud import pubsub_v1
 from google.pubsub_v1.types import ReceivedMessage
 
 from logpose.consumers.base import BaseConsumer
+from logpose.metrics.emitter import MetricsEmitter
 from logpose.models.alert import Alert
 
 logger = logging.getLogger(__name__)
@@ -32,12 +33,14 @@ class PubSubConsumer(BaseConsumer):
         self,
         project_id: str | None = None,
         subscription_id: str | None = None,
+        emitter: MetricsEmitter | None = None,
     ) -> None:
         self._project_id = project_id or os.environ["PUBSUB_PROJECT_ID"]
         self._subscription_id = subscription_id or os.environ["PUBSUB_SUBSCRIPTION_ID"]
         self._subscription_path: str | None = None
         self._subscriber: pubsub_v1.SubscriberClient | None = None
         self._running = False
+        self._emitter = emitter
 
     def connect(self) -> None:
         self._subscriber = pubsub_v1.SubscriberClient()
@@ -116,6 +119,8 @@ class PubSubConsumer(BaseConsumer):
             alert.id,
             self._subscription_path,
         )
+        if self._emitter is not None:
+            self._emitter.emit("alert_ingested", {"source": "pubsub"})
         callback(alert)
 
     def stop(self) -> None:

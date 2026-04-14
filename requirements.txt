@@ -6,3 +6,5 @@ pydantic
 python-dotenv
 requests
 splunk-sdk
+fastapi>=0.111
+uvicorn[standard]>=0.29

@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LogPose — Monitoring Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3250;
+      --text: #e2e8f0;
+      --muted: #8892a4;
+      --accent: #6c8ef5;
+      --green: #34d399;
+      --red: #f87171;
+      --yellow: #fbbf24;
+      --purple: #a78bfa;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+    header h1 span { color: var(--accent); }
+    .header-meta { display: flex; gap: 20px; align-items: center; font-size: 12px; color: var(--muted); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; }
+    .status-dot.err { background: var(--red); }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    main { padding: 24px; max-width: 1600px; margin: 0 auto; }
+    section { margin-bottom: 28px; }
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    /* ── Stat Cards ─────────────────────────────────────────────── */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .card-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 8px; }
+    .card-value { font-size: 32px; font-weight: 700; line-height: 1; }
+    .card-value.green { color: var(--green); }
+    .card-value.red   { color: var(--red); }
+    .card-value.yellow { color: var(--yellow); }
+    .card-value.accent { color: var(--accent); }
+
+    /* ── Charts Grid ─────────────────────────────────────────────── */
+    .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; }
+    .chart-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .chart-box h3 { font-size: 13px; font-weight: 600; margin-bottom: 16px; color: var(--text); }
+    .chart-box canvas { max-height: 240px; }
+
+    /* ── Tables ─────────────────────────────────────────────────── */
+    .table-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .table-box h3 {
+      font-size: 13px;
+      font-weight: 600;
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .7px;
+      color: var(--muted);
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+    }
+    td {
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-green { background: rgba(52,211,153,.15); color: var(--green); }
+    .badge-red   { background: rgba(248,113,113,.15); color: var(--red); }
+    .badge-yellow { background: rgba(251,191,36,.15); color: var(--yellow); }
+    .badge-blue  { background: rgba(108,142,245,.15); color: var(--accent); }
+    .badge-purple { background: rgba(167,139,250,.15); color: var(--purple); }
+    .empty-row td { color: var(--muted); font-style: italic; text-align: center; padding: 24px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Log<span>Pose</span> &mdash; Monitoring Dashboard</h1>
+  <div class="header-meta">
+    <span id="conn-status"><span class="status-dot" id="dot"></span><span id="conn-text">Connecting…</span></span>
+    <span>Last refresh: <strong id="last-refresh">—</strong></span>
+    <span>Auto-refresh every 10s</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Overview cards -->
+  <section>
+    <div class="section-title">Overview</div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">Alerts Ingested</div>
+        <div class="card-value accent" id="stat-ingested">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Processed</div>
+        <div class="card-value green" id="stat-processed">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Errors</div>
+        <div class="card-value red" id="stat-errors">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">DLQ Messages</div>
+        <div class="card-value yellow" id="stat-dlq">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Active Queues</div>
+        <div class="card-value" id="stat-queues">—</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Charts row 1 -->
+  <section>
+    <div class="section-title">Pipeline Activity</div>
+    <div class="chart-grid">
+      <div class="chart-box">
+        <h3>Route Invocations</h3>
+        <canvas id="chart-routes"></canvas>
+      </div>
+      <div class="chart-box">
+        <h3>Alert Sources</h3>
+        <canvas id="chart-sources"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- Queue health -->
+  <section>
+    <div class="section-title">Queue Health</div>
+    <div class="chart-grid">
+      <div class="chart-box">
+        <h3>Queue Depths</h3>
+        <canvas id="chart-queues"></canvas>
+      </div>
+      <div class="table-box">
+        <h3>Queue Details</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Queue</th><th>Depth</th><th>Ready</th><th>Consumers</th><th>Pub/s</th><th>State</th></tr>
+            </thead>
+            <tbody id="table-queues"><tr class="empty-row"><td colspan="6">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Runbook performance -->
+  <section>
+    <div class="section-title">Runbook Performance</div>
+    <div class="table-box">
+      <h3>Runbook Success / Error Counts</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Runbook</th><th>Successes</th><th>Errors</th><th>Error Rate</th></tr>
+          </thead>
+          <tbody id="table-runbooks"><tr class="empty-row"><td colspan="4">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- DLQ breakdown -->
+  <section>
+    <div class="section-title">Dead-Letter Queue</div>
+    <div class="table-box">
+      <h3>DLQ Messages by Reason</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Reason</th><th>Count</th></tr>
+          </thead>
+          <tbody id="table-dlq"><tr class="empty-row"><td colspan="2">No DLQ messages</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Reference tables -->
+  <section>
+    <div class="section-title">Reference &mdash; Read Only</div>
+    <div class="chart-grid">
+      <div class="table-box">
+        <h3>Registered Routes</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Queue</th><th>Description</th></tr></thead>
+            <tbody id="table-routes-ref"><tr class="empty-row"><td colspan="3">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="table-box">
+        <h3>Available Runbooks</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Source Queue</th></tr></thead>
+            <tbody id="table-runbooks-ref"><tr class="empty-row"><td colspan="2">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ── Chart instances ────────────────────────────────────────────────────────
+const PALETTE = [
+  '#6c8ef5','#34d399','#fbbf24','#f87171','#a78bfa',
+  '#38bdf8','#fb923c','#4ade80','#e879f9','#2dd4bf'
+];
+
+function makeChart(id, type, labels, data, opts = {}) {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    type,
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: type === 'doughnut' ? PALETTE : PALETTE[0],
+        borderColor: type === 'bar' ? PALETTE[0] : undefined,
+        borderWidth: type === 'bar' ? 0 : 2,
+        borderRadius: type === 'bar' ? 4 : undefined,
+        hoverOffset: type === 'doughnut' ? 6 : undefined,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: type === 'doughnut', labels: { color: '#e2e8f0', font: { size: 12 } } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.formattedValue}` } }
+      },
+      scales: type === 'bar' ? {
+        x: { ticks: { color: '#8892a4' }, grid: { color: '#2e3250' } },
+        y: { ticks: { color: '#8892a4', precision: 0 }, grid: { color: '#2e3250' }, beginAtZero: true }
+      } : undefined,
+      ...opts
+    }
+  });
+}
+
+let charts = {};
+
+function updateOrCreate(id, type, labels, data) {
+  if (charts[id]) {
+    charts[id].data.labels = labels;
+    charts[id].data.datasets[0].data = data;
+    if (type === 'doughnut') {
+      charts[id].data.datasets[0].backgroundColor = PALETTE.slice(0, data.length);
+    }
+    charts[id].update('none');
+  } else {
+    charts[id] = makeChart(id, type, labels, data);
+  }
+}
+
+// ── Data fetching ──────────────────────────────────────────────────────────
+async function fetchAll() {
+  try {
+    const [overview, metrics, queues, routes, runbooks] = await Promise.all([
+      fetch('/api/overview').then(r => r.json()),
+      fetch('/api/metrics').then(r => r.json()),
+      fetch('/api/queues').then(r => r.json()),
+      fetch('/api/routes').then(r => r.json()),
+      fetch('/api/runbooks').then(r => r.json()),
+    ]);
+    renderOverview(overview);
+    renderMetrics(metrics);
+    renderQueues(queues);
+    renderRoutesRef(routes);
+    renderRunbooksRef(runbooks);
+    setConnected(true);
+  } catch (e) {
+    setConnected(false);
+    console.error('Dashboard fetch error:', e);
+  }
+  document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString();
+}
+
+// ── Render helpers ─────────────────────────────────────────────────────────
+function setConnected(ok) {
+  document.getElementById('dot').className = 'status-dot' + (ok ? '' : ' err');
+  document.getElementById('conn-text').textContent = ok ? 'Connected' : 'Offline';
+}
+
+function renderOverview(d) {
+  setText('stat-ingested', d.total_ingested ?? 0);
+  setText('stat-processed', d.total_processed ?? 0);
+  setText('stat-errors', d.total_errors ?? 0);
+  setText('stat-dlq', d.dlq_count ?? 0);
+  setText('stat-queues', d.queue_count ?? 0);
+}
+
+function renderMetrics(m) {
+  // Route invocations bar chart
+  const rc = m.route_counts || {};
+  updateOrCreate('chart-routes', 'bar', Object.keys(rc), Object.values(rc));
+
+  // Alert sources doughnut
+  const ai = m.alert_ingested || {};
+  updateOrCreate('chart-sources', 'doughnut', Object.keys(ai), Object.values(ai));
+
+  // Runbook performance table
+  const allRunbooks = new Set([
+    ...Object.keys(m.runbook_success || {}),
+    ...Object.keys(m.runbook_error || {})
+  ]);
+  const tbody = document.getElementById('table-runbooks');
+  if (allRunbooks.size === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="4">No runbook events yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = [...allRunbooks].sort().map(rb => {
+    const s = (m.runbook_success || {})[rb] || 0;
+    const e = (m.runbook_error || {})[rb] || 0;
+    const total = s + e;
+    const rate = total > 0 ? ((e / total) * 100).toFixed(1) + '%' : '0%';
+    const badge = e === 0
+      ? `<span class="badge badge-green">${rate}</span>`
+      : `<span class="badge badge-red">${rate}</span>`;
+    return `<tr><td>${rb}</td><td>${s}</td><td>${e}</td><td>${badge}</td></tr>`;
+  }).join('');
+
+  // DLQ breakdown table
+  const dlq = m.dlq_counts || {};
+  const dlqTbody = document.getElementById('table-dlq');
+  const dlqEntries = Object.entries(dlq);
+  if (dlqEntries.length === 0) {
+    dlqTbody.innerHTML = '<tr class="empty-row"><td colspan="2">No DLQ messages — all clear</td></tr>';
+  } else {
+    dlqTbody.innerHTML = dlqEntries
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) =>
+        `<tr><td><span class="badge badge-yellow">${reason}</span></td><td>${count}</td></tr>`
+      ).join('');
+  }
+}
+
+function renderQueues(queues) {
+  // Bar chart
+  const names = queues.map(q => q.name);
+  const depths = queues.map(q => q.messages);
+  updateOrCreate('chart-queues', 'bar', names, depths);
+
+  // Table
+  const tbody = document.getElementById('table-queues');
+  if (!queues.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No queues found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = queues.map(q => {
+    const stateCls = q.state === 'running' ? 'badge-green' : 'badge-yellow';
+    return `<tr>
+      <td><strong>${q.name}</strong></td>
+      <td>${q.messages}</td>
+      <td>${q.messages_ready}</td>
+      <td>${q.consumers}</td>
+      <td>${q.publish_rate}</td>
+      <td><span class="badge ${stateCls}">${q.state}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderRoutesRef(routes) {
+  const tbody = document.getElementById('table-routes-ref');
+  if (!routes.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="3">No routes registered</td></tr>';
+    return;
+  }
+  tbody.innerHTML = routes.map(r =>
+    `<tr>
+      <td><code style="color:var(--accent)">${r.name}</code></td>
+      <td><code style="color:var(--purple)">${r.queue}</code></td>
+      <td style="color:var(--muted)">${r.description || '—'}</td>
+    </tr>`
+  ).join('');
+}
+
+function renderRunbooksRef(runbooks) {
+  const tbody = document.getElementById('table-runbooks-ref');
+  if (!runbooks.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="2">No runbooks discovered</td></tr>';
+    return;
+  }
+  tbody.innerHTML = runbooks.map(rb =>
+    `<tr>
+      <td><code style="color:var(--accent)">${rb.name}</code></td>
+      <td><code style="color:var(--purple)">${rb.source_queue}</code></td>
+    </tr>`
+  ).join('');
+}
+
+function setText(id, val) {
+  document.getElementById(id).textContent = val;
+}
+
+// ── Bootstrap ──────────────────────────────────────────────────────────────
+fetchAll();
+setInterval(fetchAll, 10_000);
+</script>
+</body>
+</html>

@@ -17,6 +17,7 @@ import sys
 
 # Import routes package first — this triggers route registration as side effects.
 import logpose.routing.routes  # noqa: F401
+from logpose.metrics.emitter import MetricsEmitter
 from logpose.routing.registry import registry
 from logpose.routing.router import Router
 
@@ -33,12 +34,15 @@ def main() -> None:
         "LogPose Router starting. Registered routes: %s",
         [r.name for r in registry.all_routes()],
     )
-    router = Router(registry=registry)
+    emitter = MetricsEmitter()
+    router = Router(registry=registry, emitter=emitter)
     try:
         router.run()
     except KeyboardInterrupt:
         logger.info("Received interrupt — shutting down router.")
         router.stop()
+    finally:
+        emitter.close()
 
 
 if __name__ == "__main__":

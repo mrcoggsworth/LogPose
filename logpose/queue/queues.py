@@ -19,6 +19,9 @@ QUEUE_ENRICHED: str = "enriched"
 # Dead-letter queue — receives unroutable or failed alerts for manual review / replay
 QUEUE_DLQ: str = "alerts.dlq"
 
+# Metrics queue — MetricsEmitter publishes small JSON events here; dashboard consumes
+QUEUE_METRICS: str = "logpose.metrics"
+
 # Tuple of all runbook queues for convenience (e.g., fixture setup, queue declarations)
 ALL_RUNBOOK_QUEUES: tuple[str, ...] = (
     QUEUE_RUNBOOK_CLOUDTRAIL,

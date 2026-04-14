@@ -9,6 +9,7 @@ import boto3
 from botocore.config import Config
 
 from logpose.consumers.base import BaseConsumer
+from logpose.metrics.emitter import MetricsEmitter
 from logpose.models.alert import Alert
 
 logger = logging.getLogger(__name__)
@@ -37,12 +38,14 @@ class SqsConsumer(BaseConsumer):
         queue_url: str | None = None,
         region: str | None = None,
         endpoint_url: str | None = None,
+        emitter: MetricsEmitter | None = None,
     ) -> None:
         self._queue_url = queue_url or os.environ["SQS_QUEUE_URL"]
         self._region = region or os.environ.get("AWS_REGION", "us-east-1")
         self._endpoint_url = endpoint_url or os.environ.get("AWS_ENDPOINT_URL")
         self._sqs: object | None = None
         self._running = False
+        self._emitter = emitter
 
     def connect(self) -> None:
         kwargs: dict = {
@@ -113,6 +116,8 @@ class SqsConsumer(BaseConsumer):
             },
         )
         logger.info("Received alert %s from SQS queue=%s", alert.id, self._queue_url)
+        if self._emitter is not None:
+            self._emitter.emit("alert_ingested", {"source": "sqs"})
         callback(alert)
 
         # Acknowledge (delete) the message after successful processing
