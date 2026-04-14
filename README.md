@@ -558,7 +558,9 @@ LogPose/
 │   └── integration/                 # 7 test files — require Docker Compose stack
 │
 ├── docs/
-│   ├── web-ui/                      # Web UI guides
+│   ├── dashboard/                   # LogPose Dashboard (FastAPI + browser UI)
+│   │   └── logpose-dashboard-guide.md
+│   ├── web-ui/                      # RabbitMQ Management UI guide
 │   │   └── rabbitmq-management-ui.md
 │   └── tests/                       # Testing walkthroughs for every component
 │       ├── consumers/
@@ -786,8 +788,9 @@ black logpose/ tests/
 
 The `docs/tests/` directory contains in-depth testing walkthroughs for every component, written for developers who are new to event-driven architectures:
 
-**Web UI**
-- [RabbitMQ Management UI Guide](docs/web-ui/rabbitmq-management-ui.md)
+**Web UI & Dashboard**
+- [LogPose Dashboard Guide](docs/dashboard/logpose-dashboard-guide.md) — FastAPI backend + browser UI at :8080
+- [RabbitMQ Management UI Guide](docs/web-ui/rabbitmq-management-ui.md) — Queue monitoring UI at :15672
 
 **Consumers**
 - [Kafka Consumer Walkthrough](docs/tests/consumers/kafka-testing-walkthrough.md)
