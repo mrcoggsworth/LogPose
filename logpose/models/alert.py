@@ -11,7 +11,7 @@ class Alert(BaseModel): # pydantic model for normalized alert data
     """Normalized alert model shared across all ingestion sources."""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    source: str  # "kafka" | "sns" | "pubsub"
+    source: str  # "kafka" | "sqs" | "pubsub" | "splunk_es" | "universal" | custom
     received_at: datetime = Field(
         default_factory=lambda: datetime.now(tz=timezone.utc)
     )

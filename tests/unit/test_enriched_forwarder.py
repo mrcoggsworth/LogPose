@@ -8,6 +8,7 @@ import pytest
 
 from logpose.forwarder.enriched_forwarder import EnrichedAlertForwarder
 from logpose.forwarder.splunk_client import SplunkHECClient
+from logpose.forwarder.universal_client import UniversalHTTPClient
 from logpose.models.alert import Alert
 from logpose.models.enriched_alert import EnrichedAlert
 
@@ -15,12 +16,14 @@ from logpose.models.enriched_alert import EnrichedAlert
 def _make_enriched(
     runbook: str = "cloud.aws.cloudtrail",
     extracted: dict | None = None,
+    destination: str = "splunk",
 ) -> EnrichedAlert:
     alert = Alert(source="sqs", raw_payload={"eventName": "ConsoleLogin"})
     return EnrichedAlert(
         alert=alert,
         runbook=runbook,
         extracted=extracted or {"user": "alice", "event_name": "ConsoleLogin"},
+        destination=destination,  # type: ignore[arg-type]
     )
 
 
@@ -34,10 +37,33 @@ def splunk() -> SplunkHECClient:
 
 
 @pytest.fixture()
+def universal() -> UniversalHTTPClient:
+    return UniversalHTTPClient(
+        url="https://receiver.example.com/ingest",
+        auth_header=None,
+        timeout_seconds=5,
+    )
+
+
+@pytest.fixture()
 def forwarder(splunk: SplunkHECClient) -> EnrichedAlertForwarder:
     # Bypass __init__ so no RabbitMQ connection is attempted
     fwd = EnrichedAlertForwarder.__new__(EnrichedAlertForwarder)
     fwd._splunk = splunk
+    fwd._universal = None
+    fwd._url = "amqp://localhost/"
+    fwd._connection = None
+    fwd._channel = None
+    return fwd
+
+
+@pytest.fixture()
+def forwarder_with_universal(
+    splunk: SplunkHECClient, universal: UniversalHTTPClient
+) -> EnrichedAlertForwarder:
+    fwd = EnrichedAlertForwarder.__new__(EnrichedAlertForwarder)
+    fwd._splunk = splunk
+    fwd._universal = universal
     fwd._url = "amqp://localhost/"
     fwd._connection = None
     fwd._channel = None
@@ -130,3 +156,57 @@ def test_forward_calls_flush_after_send(
     with patch.object(splunk, "send"), patch.object(splunk, "flush") as mock_flush:
         forwarder._forward(enriched)
         mock_flush.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# destination branching
+# ---------------------------------------------------------------------------
+
+
+def test_forward_routes_universal_destination_to_universal_client(
+    forwarder_with_universal: EnrichedAlertForwarder,
+    splunk: SplunkHECClient,
+    universal: UniversalHTTPClient,
+) -> None:
+    enriched = _make_enriched(destination="universal")
+    with (
+        patch.object(universal, "send") as universal_send,
+        patch.object(universal, "flush") as universal_flush,
+        patch.object(splunk, "send") as splunk_send,
+    ):
+        forwarder_with_universal._forward(enriched)
+
+        universal_send.assert_called_once()
+        universal_flush.assert_called_once()
+        splunk_send.assert_not_called()
+
+        event = universal_send.call_args[0][0]
+        assert event["source"] == "cloud.aws.cloudtrail"
+        assert event["event"]["extracted"]["user"] == "alice"
+
+
+def test_forward_routes_splunk_destination_to_splunk_client(
+    forwarder_with_universal: EnrichedAlertForwarder,
+    splunk: SplunkHECClient,
+    universal: UniversalHTTPClient,
+) -> None:
+    enriched = _make_enriched(destination="splunk")
+    with (
+        patch.object(splunk, "send") as splunk_send,
+        patch.object(splunk, "flush"),
+        patch.object(universal, "send") as universal_send,
+    ):
+        forwarder_with_universal._forward(enriched)
+
+        splunk_send.assert_called_once()
+        universal_send.assert_not_called()
+
+
+def test_forward_raises_when_universal_destination_without_client(
+    forwarder: EnrichedAlertForwarder, splunk: SplunkHECClient
+) -> None:
+    enriched = _make_enriched(destination="universal")
+    with patch.object(splunk, "send") as splunk_send:
+        with pytest.raises(RuntimeError, match="no UniversalHTTPClient"):
+            forwarder._forward(enriched)
+        splunk_send.assert_not_called()

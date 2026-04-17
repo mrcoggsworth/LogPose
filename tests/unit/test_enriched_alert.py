@@ -81,3 +81,32 @@ def test_enriched_alert_with_runbook_error(sample_alert: Alert) -> None:
         runbook_error="KeyError: 'userIdentity'",
     )
     assert enriched.runbook_error == "KeyError: 'userIdentity'"
+
+
+def test_enriched_alert_destination_defaults_to_splunk(sample_alert: Alert) -> None:
+    enriched = EnrichedAlert(alert=sample_alert, runbook="test")
+    assert enriched.destination == "splunk"
+
+
+def test_enriched_alert_destination_universal_roundtrips_through_json(
+    sample_alert: Alert,
+) -> None:
+    enriched = EnrichedAlert(
+        alert=sample_alert,
+        runbook="test",
+        destination="universal",
+    )
+    raw = enriched.model_dump_json()
+    assert json.loads(raw)["destination"] == "universal"
+
+    restored = EnrichedAlert.model_validate_json(raw)
+    assert restored.destination == "universal"
+
+
+def test_enriched_alert_rejects_unknown_destination(sample_alert: Alert) -> None:
+    with pytest.raises(Exception):
+        EnrichedAlert(
+            alert=sample_alert,
+            runbook="test",
+            destination="ftp",  # type: ignore[arg-type]
+        )

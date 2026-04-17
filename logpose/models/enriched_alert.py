@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -20,5 +20,6 @@ class EnrichedAlert(BaseModel):
     enriched_at: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
     extracted: dict[str, Any] = Field(default_factory=dict)
     runbook_error: str | None = None  # set when enrich() catches an exception
+    destination: Literal["splunk", "universal"] = "splunk"
 
     model_config = {"frozen": True}
