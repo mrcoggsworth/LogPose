@@ -24,6 +24,7 @@ import pika
 import pika.exceptions
 
 from logpose.forwarder.splunk_client import SplunkHECClient
+from logpose.forwarder.universal_client import UniversalHTTPClient
 from logpose.models.enriched_alert import EnrichedAlert
 from logpose.queue.queues import QUEUE_ENRICHED
 
@@ -45,9 +46,11 @@ class EnrichedAlertForwarder:
     def __init__(
         self,
         splunk_client: SplunkHECClient,
+        universal_client: UniversalHTTPClient | None = None,
         url: str | None = None,
     ) -> None:
         self._splunk = splunk_client
+        self._universal = universal_client
         self._url = url or os.environ["RABBITMQ_URL"]
         self._connection: pika.BlockingConnection | None = None
         self._channel: pika.adapters.blocking_connection.BlockingChannel | None = None
@@ -110,8 +113,9 @@ class EnrichedAlertForwarder:
                 channel.basic_ack(delivery_tag=tag)
             except Exception as exc:
                 logger.error(
-                    "Failed to forward EnrichedAlert %s to Splunk: %s",
+                    "Failed to forward EnrichedAlert %s (destination=%s): %s",
                     enriched.alert.id,
+                    enriched.destination,
                     exc,
                 )
                 channel.basic_nack(delivery_tag=tag, requeue=False)
@@ -146,10 +150,36 @@ class EnrichedAlertForwarder:
             self._channel = None
 
     def _forward(self, enriched: EnrichedAlert) -> None:
-        """Format an EnrichedAlert as a Splunk HEC event and deliver it."""
+        """Format an EnrichedAlert and deliver it to the destination client.
+
+        Routes to self._universal when enriched.destination == "universal";
+        otherwise delivers to Splunk HEC. The destination field is stamped
+        by BaseRunbook based on each runbook's class attribute.
+        """
         event_data = json.loads(enriched.model_dump_json())
         source = enriched.runbook or enriched.alert.source
         timestamp = enriched.enriched_at.timestamp()
+
+        if enriched.destination == "universal":
+            if self._universal is None:
+                raise RuntimeError(
+                    "EnrichedAlert destination=universal but no "
+                    "UniversalHTTPClient configured on forwarder"
+                )
+            event = self._universal.build_event(
+                event_data=event_data,
+                source=source,
+                sourcetype=_SOURCETYPE,
+                timestamp=timestamp,
+            )
+            self._universal.send(event)
+            self._universal.flush()
+            logger.info(
+                "Forwarded EnrichedAlert %s (runbook=%s) to universal endpoint",
+                enriched.alert.id,
+                enriched.runbook,
+            )
+            return
 
         event = self._splunk.build_event(
             event_data=event_data,

@@ -21,7 +21,10 @@ class BaseRunbook(abc.ABC):
 
     Class attributes to set on each subclass:
       source_queue: str  — the RabbitMQ queue this runbook consumes from
-      runbook_name: str  — dot-separated name used in EnrichedAlert, e.g. "cloud.aws.cloudtrail"
+      runbook_name: str  — dot-separated name used in EnrichedAlert,
+                           e.g. "cloud.aws.cloudtrail"
+      destination: str   — "splunk" (default) or "universal" —
+                           selects the forwarder path
 
     Each runbook is independently startable:
         python -m logpose.runbooks.cloud.aws.cloudtrail
@@ -29,6 +32,7 @@ class BaseRunbook(abc.ABC):
 
     source_queue: str
     runbook_name: str
+    destination: str = "splunk"
 
     def __init__(
         self,
@@ -86,6 +90,9 @@ class BaseRunbook(abc.ABC):
                 exc,
             )
             return
+
+        if enriched.destination != self.destination:
+            enriched = enriched.model_copy(update={"destination": self.destination})
 
         body = enriched.model_dump_json().encode()
         import pika

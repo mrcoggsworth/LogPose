@@ -1,10 +1,11 @@
 """Splunk Forwarder pod entry point.
 
-Starts two consumer threads that drain the end of the Phase II pipeline
-into Splunk:
+Starts two consumer threads that drain the end of the Phase II pipeline:
 
-  1. EnrichedAlertForwarder — reads from 'enriched' queue
-  2. DLQForwarder           — reads from 'alerts.dlq' queue
+  1. EnrichedAlertForwarder — reads from 'enriched' queue. Routes each
+     EnrichedAlert to Splunk HEC by default, or to an arbitrary HTTP
+     endpoint when the runbook marks the alert with destination="universal".
+  2. DLQForwarder           — reads from 'alerts.dlq' queue and sends to Splunk.
 
 Each thread gets its own SplunkHECClient instance (not thread-safe to share).
 
@@ -16,17 +17,25 @@ Environment variables required:
     SPLUNK_HEC_URL    — e.g. https://splunk.example.com:8088/services/collector
     SPLUNK_HEC_TOKEN  — Splunk HEC token
     SPLUNK_INDEX      — target Splunk index (default: main)
+
+Optional environment variables (universal forwarder — only used when a
+runbook sets destination="universal"):
+    UNIVERSAL_FORWARDER_URL              — destination URL
+    UNIVERSAL_FORWARDER_AUTH_HEADER      — e.g. "Bearer abc123"
+    UNIVERSAL_FORWARDER_TIMEOUT_SECONDS  — default 10
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 
 from logpose.forwarder.dlq_forwarder import DLQForwarder
 from logpose.forwarder.enriched_forwarder import EnrichedAlertForwarder
 from logpose.forwarder.splunk_client import SplunkHECClient
+from logpose.forwarder.universal_client import UniversalHTTPClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +53,17 @@ def main() -> None:
     enriched_splunk = SplunkHECClient()
     dlq_splunk = SplunkHECClient()
 
-    enriched_forwarder = EnrichedAlertForwarder(splunk_client=enriched_splunk)
+    # Universal HTTP client only used when a runbook marks the alert
+    # destination="universal". Skip construction when unconfigured so
+    # deployments that only forward to Splunk need no extra env vars.
+    enriched_universal: UniversalHTTPClient | None = (
+        UniversalHTTPClient() if os.environ.get("UNIVERSAL_FORWARDER_URL") else None
+    )
+
+    enriched_forwarder = EnrichedAlertForwarder(
+        splunk_client=enriched_splunk,
+        universal_client=enriched_universal,
+    )
     dlq_forwarder = DLQForwarder(splunk_client=dlq_splunk)
 
     enriched_forwarder.connect()
@@ -79,6 +98,8 @@ def main() -> None:
     finally:
         enriched_splunk.close()
         dlq_splunk.close()
+        if enriched_universal is not None:
+            enriched_universal.close()
         enriched_forwarder.disconnect()
         dlq_forwarder.disconnect()
         logger.info("LogPose Splunk Forwarder stopped.")

@@ -305,11 +305,37 @@ PUBSUB_SUBSCRIPTION_ID=security-alerts-sub
 # For the local emulator (local development only):
 PUBSUB_EMULATOR_HOST=localhost:8085
 
+# ─── Splunk Enterprise Security Consumer (optional) ───────────────────────────
+# Polls Splunk ES notable events via the REST/SDK. The industry-standard
+# SOAR↔Splunk integration pattern (Splunk SOAR/Phantom, Swimlane, Tines all
+# default to polling).
+SPLUNK_ES_HOST=splunk.example.com
+SPLUNK_ES_PORT=8089
+SPLUNK_ES_TOKEN=your-splunk-auth-token
+SPLUNK_ES_SCHEME=https
+SPLUNK_ES_SEARCH=search index=notable
+SPLUNK_ES_POLL_SECONDS=30
+SPLUNK_ES_BACKFILL_MINUTES=5
+SPLUNK_ES_VERIFY_TLS=true
+
+# ─── Universal HTTP Consumer (optional) ───────────────────────────────────────
+# Ad-hoc POST /ingest endpoint for alerts not coming from a subscribed queue.
+UNIVERSAL_HTTP_HOST=0.0.0.0
+UNIVERSAL_HTTP_PORT=8090
+# UNIVERSAL_HTTP_TOKEN=shared-secret   # optional; when set, clients must send
+#                                      #   Authorization: Bearer <token>
+
 # ─── Splunk Forwarder (required for Phase III) ────────────────────────────────
 SPLUNK_HEC_URL=https://splunk.example.com:8088/services/collector
 SPLUNK_HEC_TOKEN=your-hec-token-here
 SPLUNK_INDEX=main
 SPLUNK_BATCH_SIZE=50        # Optional, default is 50 events per POST
+
+# ─── Universal HTTP Forwarder (optional) ──────────────────────────────────────
+# Used only when a runbook marks its EnrichedAlert with destination="universal".
+# UNIVERSAL_FORWARDER_URL=https://receiver.example.com/ingest
+# UNIVERSAL_FORWARDER_AUTH_HEADER=Bearer abc123
+# UNIVERSAL_FORWARDER_TIMEOUT_SECONDS=10
 
 # ─── Dashboard (optional, enables the observability UI) ───────────────────────
 DASHBOARD_HOST=0.0.0.0
@@ -371,6 +397,12 @@ publisher = RabbitMQPublisher()
 with consumer, publisher:
     consumer.consume(publisher.publish)
 "
+
+# Splunk Enterprise Security consumer (pull-based notable event polling)
+python -m logpose.consumers.splunk_es_consumer
+
+# Universal HTTP consumer (exposes POST /ingest for ad-hoc alerts)
+python -m logpose.consumers.universal_consumer
 ```
 
 ### Phase II — Start the Router
