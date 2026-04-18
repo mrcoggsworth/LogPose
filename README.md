@@ -134,7 +134,7 @@ Every arrow in this diagram is a **durable RabbitMQ queue**. Pod restarts are sa
 | **Type-safe models** | Pydantic v2 frozen models for `Alert` and `EnrichedAlert` |
 | **OpenShift-ready** | Stateless pods, environment-variable configuration, Docker image included |
 | **Observability dashboard** | FastAPI backend + browser UI at :8080 — live queue depths, pipeline counters, route registry, runbook status |
-| **Extensive test coverage** | 14 unit test files + 7 integration tests driven by Docker Compose |
+| **Extensive test coverage** | 19 unit test files + 6 integration tests driven by Docker Compose |
 
 ---
 
@@ -341,9 +341,12 @@ SPLUNK_BATCH_SIZE=50        # Optional, default is 50 events per POST
 DASHBOARD_HOST=0.0.0.0
 DASHBOARD_PORT=8080
 RABBITMQ_MGMT_URL=http://localhost:15672
-RABBITMQ_MGMT_USER=guest
-RABBITMQ_MGMT_PASS=guest
+RABBITMQ_USER=guest
+RABBITMQ_PASS=guest
 ```
+
+> A ready-to-copy `.env.example` with every variable LogPose reads is checked
+> into the repo root — `cp .env.example .env` to get started.
 
 ---
 
@@ -484,6 +487,7 @@ docker compose -f docker/docker-compose.yml down -v
 | `zookeeper` | `confluentinc/cp-zookeeper:7.6.0` | 2181 | Kafka dependency |
 | `localstack` | `localstack/localstack:3` | 4566 | Emulates SQS + SNS |
 | `pubsub-emulator` | `gcr.io/google.com/cloudsdktool/google-cloud-cli` | 8085 | Pub/Sub emulator |
+| `logpose-dashboard` | built from local `Dockerfile` | 8080 | Observability UI; requires a local image build |
 
 ---
 
@@ -533,8 +537,8 @@ The dashboard is available at [http://localhost:8080](http://localhost:8080).
 DASHBOARD_HOST=0.0.0.0          # Bind address (default: 0.0.0.0)
 DASHBOARD_PORT=8080             # HTTP port (default: 8080)
 RABBITMQ_MGMT_URL=http://localhost:15672   # RabbitMQ Management API base URL
-RABBITMQ_MGMT_USER=guest        # Management API username
-RABBITMQ_MGMT_PASS=guest        # Management API password
+RABBITMQ_USER=guest             # Management API username
+RABBITMQ_PASS=guest             # Management API password
 ```
 
 For the full dashboard guide — including OpenShift deployment, SQLite persistence details, fault-tolerance behavior, and a complete UI reference — see [docs/dashboard/logpose-dashboard-guide.md](docs/dashboard/logpose-dashboard-guide.md).
@@ -872,8 +876,14 @@ pytest tests/unit/test_router.py -v
 Integration tests require the Docker Compose stack to be running.
 
 ```bash
-# Start the stack
-docker compose -f docker/docker-compose.yml up -d
+# Start the stack (infra only — skip the dashboard image build)
+docker compose -f docker/docker-compose.yml up -d \
+  rabbitmq kafka zookeeper localstack pubsub-emulator
+
+# AWS credentials must be set even for LocalStack, otherwise boto3 silently
+# resolves no credentials and SQS tests fail with no alerts received.
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
 
 # Wait for services to be healthy, then run integration tests
 pytest tests/integration -v -m integration
@@ -881,6 +891,9 @@ pytest tests/integration -v -m integration
 # Tear down when done
 docker compose -f docker/docker-compose.yml down
 ```
+
+Or just `cp .env.example .env` and run `pytest` with `python-dotenv` picking it
+up automatically.
 
 ### Full Verification Loop
 
