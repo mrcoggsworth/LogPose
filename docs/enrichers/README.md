@@ -9,11 +9,12 @@ This is the **shared infrastructure** that runbooks compose. The
 runbook-specific enrichers (CloudTrail, GuardDuty, GCP audit) live in
 `logpose.enrichers.cloud.<provider>.<service>` and ship phase by phase.
 
-> **Status — Phase A (skeleton).** This package currently exposes:
-> the `Enricher` Protocol, the `EnricherContext` dataclass, and the
-> `Principal` model with provider-aware normalizers. The TTL cache
-> (Phase B), async pipeline runner (Phase C), and concrete CloudTrail
-> enrichers (Phase D) land in subsequent commits.
+> **Status — Phase B (cache shipped).** This package currently exposes:
+> the `Enricher` Protocol, the `EnricherContext` dataclass, the
+> `Principal` model with provider-aware normalizers, and the
+> `PrincipalCache` interface with the `InProcessTTLCache` implementation.
+> The async pipeline runner (Phase C) and concrete CloudTrail enrichers
+> (Phase D) land in subsequent commits.
 
 ---
 
@@ -139,6 +140,52 @@ Principal(provider="ad", normalized_id="CORP\\alice", ...).cache_key()
 # → "ad::CORP\\alice"
 ```
 
+### `PrincipalCache` — the per-pod cache
+
+```python
+from logpose.enrichers import InProcessTTLCache, PrincipalCache
+
+class PrincipalCache(ABC):
+    def get(self, key: str, namespace: str) -> Any | None: ...
+    def set(self, key: str, namespace: str, value: Any, ttl: int) -> None: ...
+    def stats(self) -> dict[str, int]: ...   # hits, misses, evictions, size
+```
+
+Cache entries are stored under `(namespace, key)` — the **key** is
+typically `Principal.cache_key()` so all enrichers looking at the same
+principal share a key, and the **namespace** distinguishes which
+enricher's data is stored (`"history"`, `"objects"`, …). Two enrichers
+caching unrelated data for the same principal cannot collide.
+
+```python
+cache = InProcessTTLCache(max_size=5000, default_ttl=900)
+
+cache.set(principal.cache_key(), "history", events, ttl=900)
+hit_or_none = cache.get(principal.cache_key(), "history")
+
+cache.stats()
+# {"hits": 42, "misses": 7, "evictions": 0, "size": 49}
+```
+
+**Implementation choices:**
+
+- Hand-rolled on top of `collections.OrderedDict` + `time.monotonic()` —
+  no new dependency.
+- Each entry has its own `expires_at`; expired entries are dropped lazily
+  on the next `get` for that key (not counted as evictions).
+- LRU bookkeeping: `get` and `set`-of-existing-key both touch the entry
+  to most-recently-used; new inserts at `max_size` evict the
+  least-recently-used.
+- `None` is the miss sentinel — callers never store `None`.
+
+**Testability:** `InProcessTTLCache(clock=...)` accepts an injected
+clock callable. Unit tests pass a `FakeClock` they advance manually,
+sidestepping `freezegun` and any global mocking.
+
+The ABC exists so a Redis-backed implementation can swap in later
+without enricher code changes. There is no `force_refresh` API yet —
+adding one waits for a real caller.
+
 ### AssumedRole collapsing — why
 
 Two CloudTrail events from sessions of the same IAM role would produce
@@ -190,7 +237,7 @@ That's the whole contract — no base class, no decorators, no registration.
 | Phase | Adds | Status |
 |---|---|---|
 | A | `Enricher` protocol, `EnricherContext`, `Principal` + normalizers | ✅ shipped |
-| B | `PrincipalCache` ABC + `InProcessTTLCache` | pending |
+| B | `PrincipalCache` ABC + `InProcessTTLCache` | ✅ shipped |
 | C | `EnricherPipeline` (async runner with timeout + error capture) | pending |
 | D | CloudTrail enrichers: principal identity, history, write filter, object inspection | pending |
 | E | Wire `CloudTrailRunbook` into the pipeline (orchestrator only) | pending |
@@ -203,6 +250,8 @@ Each phase is independently shippable and revertable.
 ## See also
 
 - [`docs/tests/enrichers/principal-testing-walkthrough.md`](../tests/enrichers/principal-testing-walkthrough.md) — how to test the Phase A surface
+- [`docs/tests/enrichers/cache-testing-walkthrough.md`](../tests/enrichers/cache-testing-walkthrough.md) — how to test the Phase B cache
 - [`logpose/enrichers/principal.py`](../../logpose/enrichers/principal.py) — `Principal` + provider normalizers
 - [`logpose/enrichers/protocol.py`](../../logpose/enrichers/protocol.py) — `Enricher` Protocol
 - [`logpose/enrichers/context.py`](../../logpose/enrichers/context.py) — `EnricherContext` dataclass
+- [`logpose/enrichers/cache.py`](../../logpose/enrichers/cache.py) — `PrincipalCache` ABC + `InProcessTTLCache`
