@@ -9,12 +9,12 @@ This is the **shared infrastructure** that runbooks compose. The
 runbook-specific enrichers (CloudTrail, GuardDuty, GCP audit) live in
 `logpose.enrichers.cloud.<provider>.<service>` and ship phase by phase.
 
-> **Status — Phase B (cache shipped).** This package currently exposes:
-> the `Enricher` Protocol, the `EnricherContext` dataclass, the
-> `Principal` model with provider-aware normalizers, and the
-> `PrincipalCache` interface with the `InProcessTTLCache` implementation.
-> The async pipeline runner (Phase C) and concrete CloudTrail enrichers
-> (Phase D) land in subsequent commits.
+> **Status — Phase C (pipeline runner shipped).** This package currently
+> exposes the `Enricher` Protocol, the `EnricherContext` dataclass, the
+> `Principal` model with provider-aware normalizers, the `PrincipalCache`
+> interface (with the `InProcessTTLCache` implementation), and the
+> `EnricherPipeline` async runner. Concrete CloudTrail enrichers (Phase D)
+> and runbook integration (Phase E) land in subsequent commits.
 
 ---
 
@@ -186,6 +186,76 @@ The ABC exists so a Redis-backed implementation can swap in later
 without enricher code changes. There is no `force_refresh` API yet —
 adding one waits for a real caller.
 
+### `EnricherPipeline` — the async runner
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from logpose.enrichers import EnricherPipeline, EnricherContext
+
+executor = ThreadPoolExecutor(max_workers=8)
+
+pipeline = EnricherPipeline(
+    stages=[
+        [PrincipalIdentityEnricher()],                       # stage 0
+        [PrincipalHistoryEnricher(...), WriteCallFilterEnricher()],  # stage 1 — parallel
+        [ObjectInspectionEnricher(...)],                     # stage 2
+    ],
+    executor=executor,
+    total_budget_seconds=8.0,
+)
+
+# Sync caller (the runbook's blocking enrich() method):
+pipeline.run_sync(ctx)
+
+# Or directly from async code:
+await pipeline.run(ctx)
+```
+
+**Execution model:**
+
+- `stages` is a `list[list[Enricher]]`. Each inner list runs in parallel
+  (one stage), and stages are sequential.
+- Each enricher runs synchronously inside a worker thread via
+  `loop.run_in_executor(self._executor, e.run, ctx)` — boto3 stays sync,
+  the pipeline gets parallelism for free.
+- The injected `ThreadPoolExecutor` is owned by the runbook pod and
+  shared across alerts so threads are reused, not respawned per alert.
+
+**Timeout enforcement:**
+
+| Layer | How | Default |
+|---|---|---|
+| Per-enricher | `asyncio.wait_for(future, enricher.timeout)` | 3.0 s (set on the enricher) |
+| Total pipeline | `asyncio.wait_for(_run_all_stages, total_budget_seconds)` | 8.0 s |
+
+When a per-enricher timeout fires, the offender records a `TimeoutError`
+entry in `ctx.errors` and the rest of the pipeline continues. When the
+total budget fires, in-flight enrichers record a `CancelledError`, the
+pipeline records a `PipelineBudgetExceeded` entry under
+`enricher = "_pipeline_"`, and remaining stages are skipped.
+
+**Error capture format:**
+
+```python
+{
+    "enricher": "principal_history",
+    "error": "<short message>",
+    "type": "TimeoutError" | "CancelledError" | "ClientError" | <ExceptionType>,
+}
+```
+
+**Contract:** `pipeline.run` and `pipeline.run_sync` **never raise out
+to the caller** — every failure is recorded. The runbook orchestrator
+can rely on always seeing a populated context, even if every enricher
+failed.
+
+> ⚠️ **Thread cancellation caveat.** When `asyncio.wait_for` times out,
+> the underlying thread keeps running until the blocking sync call
+> completes — Python cannot preempt threads. With a fixed pool, runaway
+> threads can eventually starve the pool. Mitigations land later via
+> boto3-side socket timeouts; for now, `total_budget_seconds` is the
+> last-resort cap.
+
 ### AssumedRole collapsing — why
 
 Two CloudTrail events from sessions of the same IAM role would produce
@@ -238,7 +308,7 @@ That's the whole contract — no base class, no decorators, no registration.
 |---|---|---|
 | A | `Enricher` protocol, `EnricherContext`, `Principal` + normalizers | ✅ shipped |
 | B | `PrincipalCache` ABC + `InProcessTTLCache` | ✅ shipped |
-| C | `EnricherPipeline` (async runner with timeout + error capture) | pending |
+| C | `EnricherPipeline` (async runner with timeout + error capture) | ✅ shipped |
 | D | CloudTrail enrichers: principal identity, history, write filter, object inspection | pending |
 | E | Wire `CloudTrailRunbook` into the pipeline (orchestrator only) | pending |
 | F | Metrics: cache hit rate, per-enricher duration, error counts | pending |
@@ -251,7 +321,9 @@ Each phase is independently shippable and revertable.
 
 - [`docs/tests/enrichers/principal-testing-walkthrough.md`](../tests/enrichers/principal-testing-walkthrough.md) — how to test the Phase A surface
 - [`docs/tests/enrichers/cache-testing-walkthrough.md`](../tests/enrichers/cache-testing-walkthrough.md) — how to test the Phase B cache
+- [`docs/tests/enrichers/runner-testing-walkthrough.md`](../tests/enrichers/runner-testing-walkthrough.md) — how to test the Phase C pipeline runner
 - [`logpose/enrichers/principal.py`](../../logpose/enrichers/principal.py) — `Principal` + provider normalizers
 - [`logpose/enrichers/protocol.py`](../../logpose/enrichers/protocol.py) — `Enricher` Protocol
 - [`logpose/enrichers/context.py`](../../logpose/enrichers/context.py) — `EnricherContext` dataclass
 - [`logpose/enrichers/cache.py`](../../logpose/enrichers/cache.py) — `PrincipalCache` ABC + `InProcessTTLCache`
+- [`logpose/enrichers/runner.py`](../../logpose/enrichers/runner.py) — `EnricherPipeline` async runner

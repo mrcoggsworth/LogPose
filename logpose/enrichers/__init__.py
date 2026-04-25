@@ -7,8 +7,9 @@ to alerts (principal lookups, history queries, object descriptions, etc.):
 - ``context.EnricherContext`` — mutable per-alert state passed to each enricher
 - ``principal.Principal``     — canonical, provider-aware identity used as cache key
 - ``cache.PrincipalCache``    — TTL+LRU cache shared across enrichers in a pod
+- ``runner.EnricherPipeline`` — async stage-list runner with timeouts + error capture
 
-The async pipeline runner lands in subsequent phases.
+Concrete CloudTrail enrichers and runbook integration land in subsequent phases.
 """
 
 from logpose.enrichers.cache import InProcessTTLCache, PrincipalCache
@@ -21,10 +22,12 @@ from logpose.enrichers.principal import (
     from_gcp_audit_authentication,
 )
 from logpose.enrichers.protocol import Enricher
+from logpose.enrichers.runner import EnricherPipeline
 
 __all__ = [
     "Enricher",
     "EnricherContext",
+    "EnricherPipeline",
     "InProcessTTLCache",
     "Principal",
     "PrincipalCache",
