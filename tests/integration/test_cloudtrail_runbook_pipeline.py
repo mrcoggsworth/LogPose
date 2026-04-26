@@ -80,7 +80,6 @@ def test_full_pipeline_against_moto_happy_path(executor: Any) -> None:
         ec2_client=ec2,
         cache=InProcessTTLCache(),
         executor=executor,
-        enrichers_enabled=True,
     )
 
     enriched = runbook.enrich(_put_object_alert("my-bucket", "path/file.txt"))
@@ -126,7 +125,6 @@ def test_full_pipeline_records_aws_failure_in_enricher_errors(executor: Any) -> 
         ec2_client=ec2,
         cache=InProcessTTLCache(),
         executor=executor,
-        enrichers_enabled=True,
     )
 
     # The successful_writes list is normally populated by WriteCallFilterEnricher
@@ -168,7 +166,6 @@ def test_full_pipeline_caches_principal_across_alerts(executor: Any) -> None:
         ec2_client=ec2,
         cache=cache,
         executor=executor,
-        enrichers_enabled=True,
     )
 
     # Two alerts from the same principal but different objects.
@@ -178,28 +175,3 @@ def test_full_pipeline_caches_principal_across_alerts(executor: Any) -> None:
     # Principal-history lookup is cached — only one API call across both alerts.
     assert cloudtrail.lookup_events.call_count == 1
     assert cache.stats()["hits"] >= 1
-
-
-def test_legacy_path_when_flag_off_does_not_construct_clients() -> None:
-    """When the feature flag is off, the runbook should not need boto3 clients
-    or an executor at all — it falls back to legacy 6-field extraction."""
-    runbook = CloudTrailRunbook(url="amqp://localhost", enrichers_enabled=False)
-    assert runbook._pipeline is None
-    enriched = runbook.enrich(
-        _alert(
-            {
-                "userIdentity": {"type": "IAMUser", "userName": "alice"},
-                "eventName": "ConsoleLogin",
-                "eventSource": "signin.amazonaws.com",
-            }
-        )
-    )
-    assert enriched.extracted == {
-        "user": "alice",
-        "user_type": "IAMUser",
-        "event_name": "ConsoleLogin",
-        "event_source": "signin.amazonaws.com",
-    }
-    assert enriched.runbook_error is None
-    assert "principal" not in enriched.extracted
-    assert "enricher_errors" not in enriched.extracted

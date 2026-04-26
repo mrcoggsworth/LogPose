@@ -9,13 +9,12 @@ This is the **shared infrastructure** that runbooks compose. The
 runbook-specific enrichers (CloudTrail, GuardDuty, GCP audit) live in
 `logpose.enrichers.cloud.<provider>.<service>` and ship phase by phase.
 
-> **Status — Phase F (observability shipped).** All six phases are in
-> place. The runbook now emits four metric event types via the existing
-> `MetricsEmitter` whenever the pipeline runs: `enricher_duration_ms`,
-> `enricher_error`, `enricher_pipeline_duration_ms`, and
-> `principal_cache_stats` (the last on a configurable interval). All
-> emission is gated by the same `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED`
-> flag — flag off means zero new metrics traffic, just like before.
+> **Status — fully shipped.** `CloudTrailRunbook` is a thin
+> orchestrator over the composable enricher pipeline (Principal cache,
+> async runner, four CloudTrail enrichers, four metric event types
+> emitted via the existing `MetricsEmitter`). The pipeline is the
+> default behaviour — there is no longer a feature flag for the legacy
+> 6-field-only path.
 
 ---
 
@@ -308,9 +307,9 @@ Adding a new dispatch row is mechanical: extend `_dispatch` in
 `object_inspection.py` and add a small handler that returns
 `list[(cache_key, payload)]`.
 
-### Runbook integration (Phase E)
+### Runbook integration
 
-`CloudTrailRunbook` is now a thin orchestrator over the pipeline:
+`CloudTrailRunbook` is a thin orchestrator over the pipeline:
 
 ```python
 class CloudTrailRunbook(BaseRunbook):
@@ -320,29 +319,31 @@ class CloudTrailRunbook(BaseRunbook):
     def __init__(self, url=None, emitter=None, *,
                  cloudtrail_client=None, s3_client=None,
                  iam_client=None, ec2_client=None,
-                 cache=None, executor=None,
-                 enrichers_enabled=None) -> None: ...
+                 cache=None, executor=None) -> None: ...
 
     def enrich(self, alert: Alert) -> EnrichedAlert: ...
 ```
 
-**Behaviour by feature-flag state:**
+`__init__` constructs one boto3 client per service, one
+`InProcessTTLCache`, and one `ThreadPoolExecutor(max_workers=8)` —
+shared across alerts. Tests can inject mock clients/cache/executor via
+the kwargs; the constructor falls back to real `boto3.client(...)` when
+they are absent.
 
-| `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED` | What happens |
-|---|---|
-| unset / `false` (default) | Legacy 6-field extraction only. boto3 clients are NOT constructed. The runbook still publishes a valid `EnrichedAlert` with `runbook="cloud.aws.cloudtrail"` and the original `extracted` keys. |
-| `true` / `1` / `yes` / `on` | Pipeline constructed in `__init__` (one boto3 client per service, one `InProcessTTLCache`, one `ThreadPoolExecutor(max_workers=8)`). `enrich()` runs basic-field extraction, then the pipeline; results land under `extracted["cloudtrail"]`, `extracted["principal"]`, and `extracted["enricher_errors"]`. |
+`enrich()` runs basic-field extraction (the six legacy keys: `user`,
+`user_type`, `event_name`, `event_source`, `aws_region`, `source_ip`)
+and then the pipeline. Pipeline results land under
+`extracted["cloudtrail"]`, `extracted["principal"]`, and
+`extracted["enricher_errors"]`.
 
-The flag can also be passed explicitly to `__init__` (kwarg
-`enrichers_enabled=True`) to bypass the env var — used by tests.
-
-**Operator knobs (only read when flag is on):**
+**Operator knobs:**
 
 | Env var | Default | Effect |
 |---|---|---|
 | `LOGPOSE_ENRICHER_TOTAL_BUDGET_SECONDS` | `8.0` | Total wall-clock cap per alert |
+| `LOGPOSE_CACHE_STATS_INTERVAL` | `50` | Emit `principal_cache_stats` every N alerts |
 
-**Resulting `extracted` shape (flag on):**
+**Resulting `extracted` shape:**
 
 ```python
 extracted = {
@@ -382,10 +383,10 @@ extracted = {
 3. Once stable, flip the flag default to ON in a follow-up change and
    delete the legacy `_extract_basic_fields`-only path.
 
-### Observability (Phase F)
+### Observability
 
-When the pipeline is enabled and a `MetricsEmitter` is injected into the
-runbook, four event types are emitted via `emitter.emit(event, data)`:
+When a `MetricsEmitter` is injected into the runbook, four event types
+are emitted via `emitter.emit(event, data)`:
 
 | Event | Per | Payload |
 |---|---|---|
@@ -406,11 +407,8 @@ runbook emits them in `_emit_metrics`. The cache's `stats()` method
 (`hits`, `misses`, `evictions`, `size`) is the source for
 `principal_cache_stats`.
 
-**Operator knob (only read when the flag is on):**
-
-| Env var | Default | Effect |
-|---|---|---|
-| `LOGPOSE_CACHE_STATS_INTERVAL` | `50` | How often (in alerts processed) to emit `principal_cache_stats` |
+`LOGPOSE_CACHE_STATS_INTERVAL` (default 50) controls how often
+`principal_cache_stats` fires.
 
 **Cache hit rate from metrics.** A cheap hit-rate proxy is the ratio of
 `enricher_duration_ms{enricher="principal_history"}` events that land

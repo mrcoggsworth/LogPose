@@ -1,21 +1,21 @@
 # Enricher Observability Metrics Testing Walkthrough
 
-This document covers how to test the Phase F observability surface:
-the four metric events emitted by `CloudTrailRunbook` when the
+This document covers how to test the observability surface: the four
+metric events emitted by `CloudTrailRunbook` whenever the
 `EnricherPipeline` runs.
 
-Phase F is **side-effect plumbing** — the runner stamps per-enricher
-durations into `ctx.timings`, the cache already exposes `stats()` from
-Phase B, and the runbook emits all of it through the existing
-`MetricsEmitter`. No new dependencies, no new types — just one new
-method (`CloudTrailRunbook._emit_metrics`) and a small extension to
+The metric path is **side-effect plumbing** — the runner stamps
+per-enricher durations into `ctx.timings`, the cache exposes `stats()`,
+and the runbook emits all of it through the existing `MetricsEmitter`.
+No new dependencies, no new types — just one method
+(`CloudTrailRunbook._emit_metrics`) and a small extension to
 `EnricherContext`.
 
 ---
 
 ## Background: what gets emitted
 
-When the pipeline is enabled and a `MetricsEmitter` is injected:
+When a `MetricsEmitter` is injected into the runbook:
 
 | Event | Cardinality | Payload | When |
 |---|---|---|---|
@@ -45,7 +45,8 @@ CloudTrailRunbook.enrich
 
 ## Part 1: Unit Testing
 
-Tests live in `tests/unit/test_cloudtrail_runbook_metrics.py`. They use
+Tests live in `tests/unit/test_cloudtrail_runbook_metrics.py` (6
+tests). They use
 a `RecordingEmitter` — a `MetricsEmitter` subclass that captures
 `emit()` calls into a list instead of touching RabbitMQ:
 
@@ -80,9 +81,8 @@ test_no_error_events_on_happy_path PASSED
 test_emits_one_pipeline_duration_per_alert PASSED
 test_emits_cache_stats_at_configured_interval PASSED
 test_no_emitter_means_no_emit_calls PASSED
-test_legacy_path_emits_nothing PASSED
 
-7 passed
+6 passed
 ```
 
 ### What each test covers
@@ -95,7 +95,6 @@ test_legacy_path_emits_nothing PASSED
 | `test_emits_one_pipeline_duration_per_alert` | Two alerts → exactly two pipeline-duration events; `stages_completed=3` on the happy path |
 | `test_emits_cache_stats_at_configured_interval` | With `LOGPOSE_CACHE_STATS_INTERVAL=2`, three alerts produce exactly one `principal_cache_stats` event (at the second alert); the payload includes `hits/misses/evictions/size` and `runbook` |
 | `test_no_emitter_means_no_emit_calls` | A runbook with `emitter=None` does not raise when the pipeline runs — the metric path silently no-ops |
-| `test_legacy_path_emits_nothing` | When the feature flag is off, the pipeline doesn't run, so none of the four new events are emitted — flag-off pods produce zero new metrics traffic |
 
 ---
 

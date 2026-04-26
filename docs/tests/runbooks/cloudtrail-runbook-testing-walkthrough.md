@@ -292,8 +292,8 @@ The `test_cloudtrail_runbook_enriches_and_publishes_to_enriched_queue` test publ
 
 Unit tests live in `tests/unit/test_cloudtrail_runbook.py` and split into two groups:
 
-- **Legacy path (9 tests).** The runbook is instantiated using `CloudTrailRunbook.__new__(CloudTrailRunbook)` to skip `__init__` entirely — this bypasses the RabbitMQ connection setup so tests can call `enrich()` directly without any broker running. Class-attribute defaults (`_pipeline = None`, `_enrichers_enabled = False`) keep this pattern working after the Phase E refactor.
-- **Orchestrator path (8 tests).** The runbook is constructed properly with mock boto3 clients (`MagicMock`), an `InProcessTTLCache`, a `ThreadPoolExecutor` fixture, and `enrichers_enabled=True`. These tests cover the flag-on behaviour without touching real AWS.
+- **Basic-field path (9 tests).** The runbook is instantiated using `CloudTrailRunbook.__new__(CloudTrailRunbook)` to skip `__init__` entirely — this bypasses the RabbitMQ + boto3 + executor setup so tests can call `enrich()` directly with no broker, no AWS clients, and no thread pool. Class-attribute defaults (`_pipeline = None`, `_executor = None`) make this pattern work: `enrich()` skips the pipeline branch and runs only `_extract_basic_fields`.
+- **Orchestrator path (5 tests).** The runbook is constructed properly with mock boto3 clients (`MagicMock`), an `InProcessTTLCache`, and a `ThreadPoolExecutor` fixture. These tests cover the full pipeline behaviour without touching real AWS.
 
 A separate moto-backed integration test at `tests/integration/test_cloudtrail_runbook_pipeline.py` exercises the full pipeline end-to-end (see Part 4).
 
@@ -341,7 +341,7 @@ pytest tests/unit/test_cloudtrail_runbook.py -v
 
 ### What each test covers
 
-#### Legacy path (flag off, `__new__` instances)
+#### Basic-field path (`__new__` instances, no pipeline)
 
 | Test | What it verifies |
 |---|---|
@@ -355,18 +355,15 @@ pytest tests/unit/test_cloudtrail_runbook.py -v
 | `test_cloudtrail_enriched_alert_has_correct_runbook_name` | `enriched.runbook == "cloud.aws.cloudtrail"` |
 | `test_cloudtrail_preserves_original_alert` | `enriched.alert.id` and `enriched.alert.source` match the input alert |
 
-#### Orchestrator path (flag on, mock boto3 clients)
+#### Orchestrator path (mock boto3 clients)
 
 | Test | What it verifies |
 |---|---|
-| `test_runbook_constructs_pipeline_when_flag_enabled` | `enrichers_enabled=True` → `_pipeline is not None` |
-| `test_runbook_skips_pipeline_when_flag_disabled` | `enrichers_enabled=False` → `_pipeline is None`; no boto3 clients constructed |
+| `test_runbook_constructs_pipeline` | Construction with mock clients yields a runbook with `_pipeline is not None` |
 | `test_orchestrator_writes_principal_into_extracted` | `extracted["principal"]["normalized_id"]` matches the IAM user ARN; legacy fields still present alongside |
 | `test_orchestrator_records_enricher_errors_without_raising` | A boto3 client raising `RuntimeError` lands in `extracted["enricher_errors"]`, NOT in `runbook_error`; `enrich()` does not raise |
 | `test_orchestrator_uses_cache_across_alerts` | Two alerts from the same principal hit the cache — `lookup_events` called once across both |
 | `test_orchestrator_basic_fields_survive_pipeline_error` | A pipeline failure does not erase the basic-field extraction that ran before it |
-| `test_env_flag_enables` | Setting `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED=true` enables the pipeline without an explicit kwarg |
-| `test_env_flag_default_is_off` | With the env var absent, the pipeline is disabled by default |
 
 ### Adding a new extraction test
 
@@ -390,7 +387,7 @@ Always assert `runbook_error is None` alongside field value assertions — this 
 
 ## Part 4: Orchestrator Integration Test (moto-backed)
 
-A separate file at `tests/integration/test_cloudtrail_runbook_pipeline.py` exercises the full Phase E orchestrator end-to-end against in-process `moto`-backed AWS. It is marked `pytest.mark.integration` for grouping but, unlike the other integration tests in this suite, it does **not** require Docker — `moto` is in-process.
+A separate file at `tests/integration/test_cloudtrail_runbook_pipeline.py` exercises the full orchestrator end-to-end against in-process `moto`-backed AWS. It is marked `pytest.mark.integration` for grouping but, unlike the other integration tests in this suite, it does **not** require Docker — `moto` is in-process.
 
 ### Running it
 
@@ -405,7 +402,6 @@ pytest tests/integration/test_cloudtrail_runbook_pipeline.py -v
 | `test_full_pipeline_against_moto_happy_path` | Real moto-backed S3/IAM/EC2 + `MagicMock` cloudtrail; alert flows through all four enrichers; resulting `EnrichedAlert` carries legacy fields, `principal`, `cloudtrail`, no `enricher_errors`, no `runbook_error` |
 | `test_full_pipeline_records_aws_failure_in_enricher_errors` | A boto3 call raising lands in `extracted["enricher_errors"]`; `runbook_error` stays `None`; basic fields still extracted |
 | `test_full_pipeline_caches_principal_across_alerts` | Two alerts from the same principal but different objects: principal-history cache is hit (only one `lookup_events` call across both) |
-| `test_legacy_path_when_flag_off_does_not_construct_clients` | With the flag off, the runbook constructs no boto3 clients and `extracted` matches the legacy 6-field shape exactly |
 
 ### Why MagicMock for CloudTrail?
 

@@ -98,7 +98,6 @@ def _runbook(
         ec2_client=clients["ec2"],
         cache=cache or InProcessTTLCache(),
         executor=executor,
-        enrichers_enabled=True,
     )
 
 
@@ -214,25 +213,6 @@ def test_no_emitter_means_no_emit_calls(executor: Any) -> None:
         ec2_client=MagicMock(),
         cache=InProcessTTLCache(),
         executor=executor,
-        enrichers_enabled=True,
     )
     # Should not raise even though there's no emitter to emit through.
     runbook.enrich(_iam_user_alert())
-
-
-def test_legacy_path_emits_nothing(executor: Any) -> None:
-    """Flag off → no pipeline → no per-enricher metrics emitted."""
-    emitter = RecordingEmitter()
-    runbook = CloudTrailRunbook(
-        url="amqp://localhost",
-        emitter=emitter,
-        enrichers_enabled=False,
-    )
-    runbook.enrich(_iam_user_alert())
-    # Legacy path doesn't run the pipeline, so the new metrics don't fire.
-    PIPE = "enricher_pipeline_duration_ms"
-    DUR = "enricher_duration_ms"
-    pipeline_events = [e for e in emitter.events if e[0] == PIPE]
-    duration_events = [e for e in emitter.events if e[0] == DUR]
-    assert pipeline_events == []
-    assert duration_events == []

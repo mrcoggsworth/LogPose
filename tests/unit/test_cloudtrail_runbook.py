@@ -124,7 +124,7 @@ def test_cloudtrail_preserves_original_alert() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator path (feature flag ON) — exercises the EnricherPipeline
+# Orchestrator path — exercises the full EnricherPipeline
 # ---------------------------------------------------------------------------
 
 
@@ -161,20 +161,12 @@ def _orchestrator_runbook(
         ec2_client=clients["ec2"],
         cache=cache or InProcessTTLCache(),
         executor=executor,
-        enrichers_enabled=True,
     )
 
 
-def test_runbook_constructs_pipeline_when_flag_enabled(executor: Any) -> None:
+def test_runbook_constructs_pipeline(executor: Any) -> None:
     runbook = _orchestrator_runbook(executor)
-    assert runbook._enrichers_enabled is True
     assert runbook._pipeline is not None
-
-
-def test_runbook_skips_pipeline_when_flag_disabled() -> None:
-    runbook = CloudTrailRunbook(url="amqp://localhost", enrichers_enabled=False)
-    assert runbook._enrichers_enabled is False
-    assert runbook._pipeline is None
 
 
 def test_orchestrator_writes_principal_into_extracted(executor: Any) -> None:
@@ -269,27 +261,3 @@ def test_orchestrator_basic_fields_survive_pipeline_error(executor: Any) -> None
     assert enriched.extracted["user"] == "alice"
     assert enriched.extracted["event_name"] == "PutObject"
     assert enriched.extracted["aws_region"] == "us-east-1"
-
-
-def test_env_flag_enables(monkeypatch: pytest.MonkeyPatch, executor: Any) -> None:
-    monkeypatch.setenv("LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED", "true")
-    clients = _mock_clients()
-    runbook = CloudTrailRunbook(
-        url="amqp://localhost",
-        cloudtrail_client=clients["cloudtrail"],
-        s3_client=clients["s3"],
-        iam_client=clients["iam"],
-        ec2_client=clients["ec2"],
-        cache=InProcessTTLCache(),
-        executor=executor,
-        # enrichers_enabled left as None — should pick up the env var.
-    )
-    assert runbook._enrichers_enabled is True
-    assert runbook._pipeline is not None
-
-
-def test_env_flag_default_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED", raising=False)
-    runbook = CloudTrailRunbook(url="amqp://localhost")
-    assert runbook._enrichers_enabled is False
-    assert runbook._pipeline is None
