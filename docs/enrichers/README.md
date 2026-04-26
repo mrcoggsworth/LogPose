@@ -9,15 +9,15 @@ This is the **shared infrastructure** that runbooks compose. The
 runbook-specific enrichers (CloudTrail, GuardDuty, GCP audit) live in
 `logpose.enrichers.cloud.<provider>.<service>` and ship phase by phase.
 
-> **Status — Phase D (CloudTrail enrichers shipped).** This package
-> currently exposes the `Enricher` Protocol, the `EnricherContext`
-> dataclass, the `Principal` model with provider-aware normalizers, the
-> `PrincipalCache` interface (with the `InProcessTTLCache`
-> implementation), the `EnricherPipeline` async runner, and the four
-> concrete CloudTrail enrichers (`PrincipalIdentityEnricher`,
-> `PrincipalHistoryEnricher`, `WriteCallFilterEnricher`,
-> `ObjectInspectionEnricher`) plus the `CloudTrailEnrichment` typed
-> sub-model. Runbook integration (Phase E) lands in the next commit.
+> **Status — Phase E (runbook orchestrator shipped).** Everything from
+> Phases A–D plus `CloudTrailRunbook` is now wired as a thin
+> orchestrator over the `EnricherPipeline`, gated by the
+> `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED` feature flag (default OFF).
+> When the flag is on, the runbook constructs boto3 clients + cache +
+> executor in `__init__`, builds the pipeline once, and `enrich()` runs
+> basic-field extraction → pipeline → returns `EnrichedAlert`. When
+> off, the legacy 6-field extraction is used and no AWS clients are
+> constructed. Phase F (metrics) lands next.
 
 ---
 
@@ -310,6 +310,80 @@ Adding a new dispatch row is mechanical: extend `_dispatch` in
 `object_inspection.py` and add a small handler that returns
 `list[(cache_key, payload)]`.
 
+### Runbook integration (Phase E)
+
+`CloudTrailRunbook` is now a thin orchestrator over the pipeline:
+
+```python
+class CloudTrailRunbook(BaseRunbook):
+    runbook_name = "cloud.aws.cloudtrail"
+    source_queue = QUEUE_RUNBOOK_CLOUDTRAIL
+
+    def __init__(self, url=None, emitter=None, *,
+                 cloudtrail_client=None, s3_client=None,
+                 iam_client=None, ec2_client=None,
+                 cache=None, executor=None,
+                 enrichers_enabled=None) -> None: ...
+
+    def enrich(self, alert: Alert) -> EnrichedAlert: ...
+```
+
+**Behaviour by feature-flag state:**
+
+| `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED` | What happens |
+|---|---|
+| unset / `false` (default) | Legacy 6-field extraction only. boto3 clients are NOT constructed. The runbook still publishes a valid `EnrichedAlert` with `runbook="cloud.aws.cloudtrail"` and the original `extracted` keys. |
+| `true` / `1` / `yes` / `on` | Pipeline constructed in `__init__` (one boto3 client per service, one `InProcessTTLCache`, one `ThreadPoolExecutor(max_workers=8)`). `enrich()` runs basic-field extraction, then the pipeline; results land under `extracted["cloudtrail"]`, `extracted["principal"]`, and `extracted["enricher_errors"]`. |
+
+The flag can also be passed explicitly to `__init__` (kwarg
+`enrichers_enabled=True`) to bypass the env var — used by tests.
+
+**Operator knobs (only read when flag is on):**
+
+| Env var | Default | Effect |
+|---|---|---|
+| `LOGPOSE_ENRICHER_TOTAL_BUDGET_SECONDS` | `8.0` | Total wall-clock cap per alert |
+
+**Resulting `extracted` shape (flag on):**
+
+```python
+extracted = {
+    # Legacy fields — always present.
+    "user": "alice",
+    "user_type": "IAMUser",
+    "event_name": "PutObject",
+    "event_source": "s3.amazonaws.com",
+    "aws_region": "us-east-1",
+    "source_ip": "198.51.100.7",
+
+    # Pipeline outputs — present when the flag is on.
+    "principal": {  # Principal.model_dump()
+        "provider": "aws",
+        "normalized_id": "arn:aws:iam::123:user/alice",
+        ...
+    },
+    "cloudtrail": {  # CloudTrailEnrichment fields, written by the four enrichers
+        "principal_recent_events": [...],
+        "successful_writes": [...],
+        "inspected_objects": {...},
+    },
+    "enricher_errors": [  # only present if at least one enricher recorded an error
+        {"enricher": "principal_history", "error": "...", "type": "..."},
+    ],
+}
+```
+
+**Cut-over plan:**
+
+1. Ship Phase E with the flag default OFF — production behaviour
+   unchanged. Pods restart with the new code but keep the legacy
+   `extracted` shape.
+2. Verify in staging by setting
+   `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED=true` on the runbook
+   Deployment. Watch the Splunk forwarder for the new keys.
+3. Once stable, flip the flag default to ON in a follow-up change and
+   delete the legacy `_extract_basic_fields`-only path.
+
 ### AssumedRole collapsing — why
 
 Two CloudTrail events from sessions of the same IAM role would produce
@@ -364,7 +438,7 @@ That's the whole contract — no base class, no decorators, no registration.
 | B | `PrincipalCache` ABC + `InProcessTTLCache` | ✅ shipped |
 | C | `EnricherPipeline` (async runner with timeout + error capture) | ✅ shipped |
 | D | CloudTrail enrichers: principal identity, history, write filter, object inspection | ✅ shipped |
-| E | Wire `CloudTrailRunbook` into the pipeline (orchestrator only) | pending |
+| E | Wire `CloudTrailRunbook` into the pipeline (orchestrator only) | ✅ shipped |
 | F | Metrics: cache hit rate, per-enricher duration, error counts | pending |
 
 Each phase is independently shippable and revertable.
@@ -377,9 +451,11 @@ Each phase is independently shippable and revertable.
 - [`docs/tests/enrichers/cache-testing-walkthrough.md`](../tests/enrichers/cache-testing-walkthrough.md) — how to test the Phase B cache
 - [`docs/tests/enrichers/runner-testing-walkthrough.md`](../tests/enrichers/runner-testing-walkthrough.md) — how to test the Phase C pipeline runner
 - [`docs/tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md`](../tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md) — how to test the Phase D CloudTrail enrichers (moto-backed)
+- [`docs/tests/runbooks/cloudtrail-runbook-testing-walkthrough.md`](../tests/runbooks/cloudtrail-runbook-testing-walkthrough.md) — Phase E orchestrator runbook walkthrough (legacy + flag-on paths, integration test)
 - [`logpose/enrichers/principal.py`](../../logpose/enrichers/principal.py) — `Principal` + provider normalizers
 - [`logpose/enrichers/protocol.py`](../../logpose/enrichers/protocol.py) — `Enricher` Protocol
 - [`logpose/enrichers/context.py`](../../logpose/enrichers/context.py) — `EnricherContext` dataclass
 - [`logpose/enrichers/cache.py`](../../logpose/enrichers/cache.py) — `PrincipalCache` ABC + `InProcessTTLCache`
 - [`logpose/enrichers/runner.py`](../../logpose/enrichers/runner.py) — `EnricherPipeline` async runner
 - [`logpose/enrichers/cloud/aws/cloudtrail/`](../../logpose/enrichers/cloud/aws/cloudtrail) — concrete CloudTrail enrichers + `CloudTrailEnrichment` schema
+- [`logpose/runbooks/cloud/aws/cloudtrail.py`](../../logpose/runbooks/cloud/aws/cloudtrail.py) — `CloudTrailRunbook` orchestrator (basic field extraction + pipeline)

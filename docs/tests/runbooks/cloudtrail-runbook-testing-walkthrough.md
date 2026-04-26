@@ -9,21 +9,36 @@ This document covers how to test the `CloudTrailRunbook` at two levels:
 
 ## Background: CloudTrailRunbook and the Enrichment Model
 
-`CloudTrailRunbook` is the Phase II runbook for AWS CloudTrail events. It consumes `Alert` objects from the `runbook.cloudtrail` queue, extracts key fields from the raw CloudTrail payload, and publishes an `EnrichedAlert` to the `enriched` queue for downstream processing (Phase IV).
+`CloudTrailRunbook` consumes `Alert` objects from the `runbook.cloudtrail` queue and publishes an `EnrichedAlert` to the `enriched` queue. As of Phase E, the runbook is a thin **orchestrator** over the composable enricher pipeline (`logpose.enrichers`). The behaviour you see depends on a feature flag.
 
 ```
 runbook.cloudtrail queue
         │
         ▼
-CloudTrailRunbook.run()
+CloudTrailRunbook.run()              ← consume / publish loop in BaseRunbook
         │
         └── enrich(alert)
               │
-              ├── extract user, event_name, event_source, aws_region, source_ip
+              ├── _extract_basic_fields(alert)         ← legacy 6 fields, always
+              ├── if enrichers_enabled:
+              │     pipeline.run_sync(EnricherContext(alert, extracted))
+              │     extracted["principal"] = ctx.principal.model_dump()
+              │     extracted["enricher_errors"] = ctx.errors  (only if any)
               └── publish EnrichedAlert ──→ enriched queue
 ```
 
-`enrich()` in `logpose/runbooks/cloud/aws/cloudtrail.py` reads from `alert.raw_payload` and extracts:
+### Feature flag
+
+| `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED` | What runs |
+|---|---|
+| unset / `false` (default) | Legacy 6-field extraction only. boto3 clients are not constructed; the pod can run with no AWS credentials. |
+| `true` / `1` / `yes` / `on` | Pipeline constructed in `__init__` (boto3 clients for cloudtrail/s3/iam/ec2 + `InProcessTTLCache` + `ThreadPoolExecutor`). `enrich()` runs basic-field extraction *and* the four CloudTrail enrichers. |
+
+The flag is also accepted as a kwarg (`enrichers_enabled=True`) for tests and dev tooling.
+
+### Legacy (flag off) `extracted` shape
+
+Always present — preserved exactly from the pre-Phase-E implementation:
 
 - `user` — from `userIdentity.userName`; falls back to `userIdentity.arn` when `userName` is absent
 - `user_type` — from `userIdentity.type`
@@ -32,7 +47,25 @@ CloudTrailRunbook.run()
 - `aws_region` — from `awsRegion`
 - `source_ip` — from `sourceIPAddress`
 
-Each field is extracted independently — a missing field is silently skipped, so partially structured payloads still produce a partial `extracted` dict rather than failing. The method never raises: any exception caught during extraction is recorded as `runbook_error` on the returned `EnrichedAlert` and logged, leaving `extracted` with whatever fields were successfully parsed before the failure.
+### Orchestrator (flag on) additions
+
+In addition to the six legacy keys:
+
+- `principal` — `Principal.model_dump()` (provider, normalized_id, raw_id, display_name, account_or_project)
+- `cloudtrail` — `CloudTrailEnrichment` fields populated by the four enrichers:
+  - `principal_recent_events` — `cloudtrail.lookup_events` items (cached per principal, namespace `"history"`)
+  - `successful_writes` — filtered to `readOnly=False` AND no `errorCode`
+  - `inspected_objects` — keyed by stable resource id (e.g. `"s3:object:bucket/key"`, `"iam:user:alice"`, `"ec2:instance:i-..."`); cached per resource, namespace `"objects"`
+- `enricher_errors` — only when at least one enricher recorded an error: `[{"enricher", "error", "type"}, ...]`
+
+### Error semantics
+
+`enrich()` never raises. Failures land in one of two places:
+
+- **Per-enricher failures** → `extracted["enricher_errors"]`. The pipeline continues; sibling enrichers in the same stage still run.
+- **Orchestrator-level failure** (a bug in `_extract_basic_fields` or the pipeline runner itself) → `runbook_error`. The pipeline is designed not to raise out, so this should be empty in practice.
+
+Cached lookups are NOT polluted by failures: an enricher that catches an exception writes the error and returns without writing to the cache.
 
 The return value is always:
 
@@ -257,7 +290,12 @@ The `test_cloudtrail_runbook_enriches_and_publishes_to_enriched_queue` test publ
 
 ## Part 2: Unit Testing the CloudTrail Runbook
 
-Unit tests live in `tests/unit/test_cloudtrail_runbook.py`. The runbook is instantiated using `CloudTrailRunbook.__new__(CloudTrailRunbook)` to skip `__init__` entirely — this bypasses the RabbitMQ connection setup so tests can call `enrich()` directly without any broker running.
+Unit tests live in `tests/unit/test_cloudtrail_runbook.py` and split into two groups:
+
+- **Legacy path (9 tests).** The runbook is instantiated using `CloudTrailRunbook.__new__(CloudTrailRunbook)` to skip `__init__` entirely — this bypasses the RabbitMQ connection setup so tests can call `enrich()` directly without any broker running. Class-attribute defaults (`_pipeline = None`, `_enrichers_enabled = False`) keep this pattern working after the Phase E refactor.
+- **Orchestrator path (8 tests).** The runbook is constructed properly with mock boto3 clients (`MagicMock`), an `InProcessTTLCache`, a `ThreadPoolExecutor` fixture, and `enrichers_enabled=True`. These tests cover the flag-on behaviour without touching real AWS.
+
+A separate moto-backed integration test at `tests/integration/test_cloudtrail_runbook_pipeline.py` exercises the full pipeline end-to-end (see Part 4).
 
 ### The mock structure
 
@@ -303,6 +341,8 @@ pytest tests/unit/test_cloudtrail_runbook.py -v
 
 ### What each test covers
 
+#### Legacy path (flag off, `__new__` instances)
+
 | Test | What it verifies |
 |---|---|
 | `test_cloudtrail_extracts_user_from_user_identity` | `userIdentity.userName` → `extracted["user"]` |
@@ -314,6 +354,19 @@ pytest tests/unit/test_cloudtrail_runbook.py -v
 | `test_cloudtrail_handles_missing_user_identity_gracefully` | Missing `userIdentity` key is skipped; no error; other fields still extracted |
 | `test_cloudtrail_enriched_alert_has_correct_runbook_name` | `enriched.runbook == "cloud.aws.cloudtrail"` |
 | `test_cloudtrail_preserves_original_alert` | `enriched.alert.id` and `enriched.alert.source` match the input alert |
+
+#### Orchestrator path (flag on, mock boto3 clients)
+
+| Test | What it verifies |
+|---|---|
+| `test_runbook_constructs_pipeline_when_flag_enabled` | `enrichers_enabled=True` → `_pipeline is not None` |
+| `test_runbook_skips_pipeline_when_flag_disabled` | `enrichers_enabled=False` → `_pipeline is None`; no boto3 clients constructed |
+| `test_orchestrator_writes_principal_into_extracted` | `extracted["principal"]["normalized_id"]` matches the IAM user ARN; legacy fields still present alongside |
+| `test_orchestrator_records_enricher_errors_without_raising` | A boto3 client raising `RuntimeError` lands in `extracted["enricher_errors"]`, NOT in `runbook_error`; `enrich()` does not raise |
+| `test_orchestrator_uses_cache_across_alerts` | Two alerts from the same principal hit the cache — `lookup_events` called once across both |
+| `test_orchestrator_basic_fields_survive_pipeline_error` | A pipeline failure does not erase the basic-field extraction that ran before it |
+| `test_env_flag_enables` | Setting `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED=true` enables the pipeline without an explicit kwarg |
+| `test_env_flag_default_is_off` | With the env var absent, the pipeline is disabled by default |
 
 ### Adding a new extraction test
 
@@ -332,6 +385,31 @@ def test_cloudtrail_extracts_new_field() -> None:
 ```
 
 Always assert `runbook_error is None` alongside field value assertions — this confirms extraction completed without a caught exception.
+
+---
+
+## Part 4: Orchestrator Integration Test (moto-backed)
+
+A separate file at `tests/integration/test_cloudtrail_runbook_pipeline.py` exercises the full Phase E orchestrator end-to-end against in-process `moto`-backed AWS. It is marked `pytest.mark.integration` for grouping but, unlike the other integration tests in this suite, it does **not** require Docker — `moto` is in-process.
+
+### Running it
+
+```sh
+pytest tests/integration/test_cloudtrail_runbook_pipeline.py -v
+```
+
+### What each test covers
+
+| Test | What it verifies |
+|---|---|
+| `test_full_pipeline_against_moto_happy_path` | Real moto-backed S3/IAM/EC2 + `MagicMock` cloudtrail; alert flows through all four enrichers; resulting `EnrichedAlert` carries legacy fields, `principal`, `cloudtrail`, no `enricher_errors`, no `runbook_error` |
+| `test_full_pipeline_records_aws_failure_in_enricher_errors` | A boto3 call raising lands in `extracted["enricher_errors"]`; `runbook_error` stays `None`; basic fields still extracted |
+| `test_full_pipeline_caches_principal_across_alerts` | Two alerts from the same principal but different objects: principal-history cache is hit (only one `lookup_events` call across both) |
+| `test_legacy_path_when_flag_off_does_not_construct_clients` | With the flag off, the runbook constructs no boto3 clients and `extracted` matches the legacy 6-field shape exactly |
+
+### Why MagicMock for CloudTrail?
+
+`moto` 5.x does not implement `cloudtrail.lookup_events`. Rather than skipping the principal-history path entirely, the test fixtures use a `MagicMock` for the CloudTrail client (with a configurable `lookup_events.return_value` or `side_effect`). The other three clients (S3, IAM, EC2) are real boto3 clients pointed at moto. If `moto` adds CloudTrail support in the future, these tests can be flipped to all-real clients.
 
 ---
 
@@ -587,7 +665,10 @@ Alerts that fail routing go to `alerts.dlq` and are picked up by the DLQForwarde
 
 | File | Purpose |
 |---|---|
-| [`logpose/runbooks/cloud/aws/cloudtrail.py`](../../../logpose/runbooks/cloud/aws/cloudtrail.py) | CloudTrailRunbook implementation — `enrich()` extraction logic |
+| [`logpose/runbooks/cloud/aws/cloudtrail.py`](../../../logpose/runbooks/cloud/aws/cloudtrail.py) | CloudTrailRunbook orchestrator — `__init__` builds the pipeline (when flag on); `enrich()` does basic-field extraction + `pipeline.run_sync` |
+| [`logpose/enrichers/cloud/aws/cloudtrail/`](../../../logpose/enrichers/cloud/aws/cloudtrail) | The four CloudTrail enrichers + `CloudTrailEnrichment` schema (Phase D) |
+| [`docs/enrichers/README.md`](../../enrichers/README.md) | Architecture overview for the enricher package — see the runbook-integration section for the cut-over plan |
+| [`tests/integration/test_cloudtrail_runbook_pipeline.py`](../../../tests/integration/test_cloudtrail_runbook_pipeline.py) | Phase E moto-backed integration test for the full orchestrator + pipeline (no Docker required) |
 | [`logpose/runbooks/base.py`](../../../logpose/runbooks/base.py) | BaseRunbook abstract base class — `run()` consume loop, `publish_enriched()` |
 | [`logpose/runbooks/cloud/aws/__main__.py`](../../../logpose/runbooks/cloud/aws/__main__.py) | Pod entry point — `python -m logpose.runbooks.cloud.aws` |
 | [`logpose/models/enriched_alert.py`](../../../logpose/models/enriched_alert.py) | EnrichedAlert model — `alert`, `runbook`, `extracted`, `runbook_error` |
