@@ -27,6 +27,7 @@ iniconfig
 jmespath
 librt
 mccabe
+moto[cloudtrail,ec2,iam,s3]
 mypy
 mypy-boto3-sns
 mypy-boto3-sqs

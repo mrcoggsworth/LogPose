@@ -9,7 +9,8 @@ to alerts (principal lookups, history queries, object descriptions, etc.):
 - ``cache.PrincipalCache``    — TTL+LRU cache shared across enrichers in a pod
 - ``runner.EnricherPipeline`` — async stage-list runner with timeouts + error capture
 
-Concrete CloudTrail enrichers and runbook integration land in subsequent phases.
+Concrete CloudTrail enrichers live under ``logpose.enrichers.cloud.aws.cloudtrail``.
+Runbook integration lands in Phase E.
 """
 
 from logpose.enrichers.cache import InProcessTTLCache, PrincipalCache

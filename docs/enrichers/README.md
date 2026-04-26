@@ -9,12 +9,15 @@ This is the **shared infrastructure** that runbooks compose. The
 runbook-specific enrichers (CloudTrail, GuardDuty, GCP audit) live in
 `logpose.enrichers.cloud.<provider>.<service>` and ship phase by phase.
 
-> **Status — Phase C (pipeline runner shipped).** This package currently
-> exposes the `Enricher` Protocol, the `EnricherContext` dataclass, the
-> `Principal` model with provider-aware normalizers, the `PrincipalCache`
-> interface (with the `InProcessTTLCache` implementation), and the
-> `EnricherPipeline` async runner. Concrete CloudTrail enrichers (Phase D)
-> and runbook integration (Phase E) land in subsequent commits.
+> **Status — Phase D (CloudTrail enrichers shipped).** This package
+> currently exposes the `Enricher` Protocol, the `EnricherContext`
+> dataclass, the `Principal` model with provider-aware normalizers, the
+> `PrincipalCache` interface (with the `InProcessTTLCache`
+> implementation), the `EnricherPipeline` async runner, and the four
+> concrete CloudTrail enrichers (`PrincipalIdentityEnricher`,
+> `PrincipalHistoryEnricher`, `WriteCallFilterEnricher`,
+> `ObjectInspectionEnricher`) plus the `CloudTrailEnrichment` typed
+> sub-model. Runbook integration (Phase E) lands in the next commit.
 
 ---
 
@@ -256,6 +259,57 @@ failed.
 > boto3-side socket timeouts; for now, `total_budget_seconds` is the
 > last-resort cap.
 
+### CloudTrail enrichers (Phase D)
+
+Live under `logpose.enrichers.cloud.aws.cloudtrail`. Four enrichers, one
+typed sub-model:
+
+```python
+from logpose.enrichers.cloud.aws.cloudtrail import (
+    CloudTrailEnrichment,
+    PrincipalIdentityEnricher,
+    PrincipalHistoryEnricher,
+    WriteCallFilterEnricher,
+    ObjectInspectionEnricher,
+)
+```
+
+| Enricher | Stage | What it does | AWS calls? | Cache namespace |
+|---|---|---|---|---|
+| `PrincipalIdentityEnricher` | 0 | Reads `alert.raw_payload["userIdentity"]`, builds `Principal`, sets `ctx.principal` | none | — |
+| `PrincipalHistoryEnricher` | 1 | `cloudtrail.lookup_events(Username=...)` for IAMUser/AssumedRole; skips Root/Service/Federated with a structured note | CloudTrail `LookupEvents` | `history` |
+| `WriteCallFilterEnricher` | 1 | Parses each history item's `CloudTrailEvent` JSON; keeps only `readOnly == False` AND no `errorCode` | none | — |
+| `ObjectInspectionEnricher` | 2 | Dispatches by `(eventSource, eventName)` to S3/IAM/EC2 describes for write targets | S3 `head_object`, IAM `get_user`/`get_role`, EC2 `describe_instances` | `objects` |
+
+The enrichers write into `ctx.extracted["cloudtrail"]` under the keys
+defined by `CloudTrailEnrichment`:
+
+```python
+ctx.extracted["cloudtrail"] = {
+    "principal_recent_events": [...],   # raw LookupEvents items
+    "successful_writes": [...],         # parsed events with readOnly=False, no errorCode
+    "inspected_objects": {              # keyed by stable resource id
+        "s3:object:my-bucket/file.txt": {...},
+        "iam:user:alice": {...},
+        "ec2:instance:i-abc123": {...},
+    },
+}
+```
+
+**Dispatch table for `ObjectInspectionEnricher`:**
+
+| `(eventSource, eventName)` | Handler |
+|---|---|
+| `s3.amazonaws.com`, `PutObject`/`DeleteObject`/`CopyObject` | `head_object(Bucket, Key)` |
+| `iam.amazonaws.com`, `CreateUser`/`UpdateUser`/`DeleteUser` | `get_user(UserName)` |
+| `iam.amazonaws.com`, `CreateRole`/`UpdateRole`/`DeleteRole` | `get_role(RoleName)` |
+| `ec2.amazonaws.com`, `RunInstances` | `describe_instances(InstanceIds=[...])` from `responseElements.instancesSet.items` |
+| anything else | silent skip (no error) |
+
+Adding a new dispatch row is mechanical: extend `_dispatch` in
+`object_inspection.py` and add a small handler that returns
+`list[(cache_key, payload)]`.
+
 ### AssumedRole collapsing — why
 
 Two CloudTrail events from sessions of the same IAM role would produce
@@ -309,7 +363,7 @@ That's the whole contract — no base class, no decorators, no registration.
 | A | `Enricher` protocol, `EnricherContext`, `Principal` + normalizers | ✅ shipped |
 | B | `PrincipalCache` ABC + `InProcessTTLCache` | ✅ shipped |
 | C | `EnricherPipeline` (async runner with timeout + error capture) | ✅ shipped |
-| D | CloudTrail enrichers: principal identity, history, write filter, object inspection | pending |
+| D | CloudTrail enrichers: principal identity, history, write filter, object inspection | ✅ shipped |
 | E | Wire `CloudTrailRunbook` into the pipeline (orchestrator only) | pending |
 | F | Metrics: cache hit rate, per-enricher duration, error counts | pending |
 
@@ -322,8 +376,10 @@ Each phase is independently shippable and revertable.
 - [`docs/tests/enrichers/principal-testing-walkthrough.md`](../tests/enrichers/principal-testing-walkthrough.md) — how to test the Phase A surface
 - [`docs/tests/enrichers/cache-testing-walkthrough.md`](../tests/enrichers/cache-testing-walkthrough.md) — how to test the Phase B cache
 - [`docs/tests/enrichers/runner-testing-walkthrough.md`](../tests/enrichers/runner-testing-walkthrough.md) — how to test the Phase C pipeline runner
+- [`docs/tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md`](../tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md) — how to test the Phase D CloudTrail enrichers (moto-backed)
 - [`logpose/enrichers/principal.py`](../../logpose/enrichers/principal.py) — `Principal` + provider normalizers
 - [`logpose/enrichers/protocol.py`](../../logpose/enrichers/protocol.py) — `Enricher` Protocol
 - [`logpose/enrichers/context.py`](../../logpose/enrichers/context.py) — `EnricherContext` dataclass
 - [`logpose/enrichers/cache.py`](../../logpose/enrichers/cache.py) — `PrincipalCache` ABC + `InProcessTTLCache`
 - [`logpose/enrichers/runner.py`](../../logpose/enrichers/runner.py) — `EnricherPipeline` async runner
+- [`logpose/enrichers/cloud/aws/cloudtrail/`](../../logpose/enrichers/cloud/aws/cloudtrail) — concrete CloudTrail enrichers + `CloudTrailEnrichment` schema
