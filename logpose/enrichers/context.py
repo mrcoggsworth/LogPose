@@ -26,7 +26,12 @@ class EnricherContext:
     Fields populated by enrichers during the run:
       - ``principal`` — set by the principal-identity enricher in stage 0
       - ``errors``    — appended to whenever an enricher catches an exception
-      - ``timings``   — appended to by the runner once Phase F lands
+
+    Fields populated by the runner (Phase F):
+      - ``timings``           — one ``{"enricher", "duration_ms"}`` entry per
+                                enricher run (success or failure)
+      - ``stages_completed``  — number of stages that finished before the
+                                pipeline's total budget was exhausted
     """
 
     alert: Alert
@@ -34,3 +39,4 @@ class EnricherContext:
     principal: Principal | None = None
     errors: list[dict[str, str]] = field(default_factory=list)
     timings: list[dict[str, Any]] = field(default_factory=list)
+    stages_completed: int = 0

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -95,12 +96,15 @@ class EnricherPipeline:
     async def _run_all_stages(self, ctx: EnricherContext) -> None:
         for stage in self._stages:
             if not stage:
+                ctx.stages_completed += 1
                 continue
             await asyncio.gather(*[self._run_one(e, ctx) for e in stage])
+            ctx.stages_completed += 1
 
     async def _run_one(self, enricher: Enricher, ctx: EnricherContext) -> None:
         loop = asyncio.get_running_loop()
         future: Any = loop.run_in_executor(self._executor, enricher.run, ctx)
+        started = time.monotonic()
         try:
             await asyncio.wait_for(future, timeout=enricher.timeout)
         except asyncio.TimeoutError:
@@ -127,5 +131,12 @@ class EnricherPipeline:
                     "enricher": enricher.name,
                     "error": str(exc),
                     "type": type(exc).__name__,
+                }
+            )
+        finally:
+            ctx.timings.append(
+                {
+                    "enricher": enricher.name,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
                 }
             )

@@ -12,6 +12,8 @@ Feature flag: ``LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED``
 
 Operator knobs (env vars, only read when the flag is on):
 - ``LOGPOSE_ENRICHER_TOTAL_BUDGET_SECONDS`` (default 8.0)
+- ``LOGPOSE_CACHE_STATS_INTERVAL`` (default 50)  — how often the runbook
+  emits a ``principal_cache_stats`` metric (every N processed alerts)
 
 The pod constructs boto3 clients, the principal cache, and the thread-pool
 executor exactly once in ``__init__`` and shares them across alerts.
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -45,8 +48,10 @@ logger = logging.getLogger(__name__)
 
 _FLAG_ENV = "LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED"
 _BUDGET_ENV = "LOGPOSE_ENRICHER_TOTAL_BUDGET_SECONDS"
+_CACHE_STATS_INTERVAL_ENV = "LOGPOSE_CACHE_STATS_INTERVAL"
 _DEFAULT_BUDGET_SECONDS = 8.0
 _DEFAULT_MAX_WORKERS = 8
+_DEFAULT_CACHE_STATS_INTERVAL = 50
 
 
 def _env_flag(name: str) -> bool:
@@ -74,6 +79,8 @@ class CloudTrailRunbook(BaseRunbook):
     _pipeline: EnricherPipeline | None = None
     _executor: ThreadPoolExecutor | None = None
     _enrichers_enabled: bool = False
+    _alerts_processed: int = 0
+    _cache_stats_interval: int = _DEFAULT_CACHE_STATS_INTERVAL
 
     def __init__(
         self,
@@ -114,6 +121,10 @@ class CloudTrailRunbook(BaseRunbook):
         )
 
         budget = float(os.getenv(_BUDGET_ENV, str(_DEFAULT_BUDGET_SECONDS)))
+        default_interval = str(_DEFAULT_CACHE_STATS_INTERVAL)
+        interval_raw = os.getenv(_CACHE_STATS_INTERVAL_ENV, default_interval)
+        self._cache_stats_interval = max(1, int(interval_raw))
+        self._alerts_processed = 0
         self._pipeline = EnricherPipeline(
             stages=[
                 [PrincipalIdentityEnricher()],
@@ -152,13 +163,16 @@ class CloudTrailRunbook(BaseRunbook):
             extracted.update(self._extract_basic_fields(alert))
             if self._pipeline is not None:
                 ctx = EnricherContext(alert=alert, extracted=extracted)
+                started = time.monotonic()
                 self._pipeline.run_sync(ctx)
+                pipeline_ms = int((time.monotonic() - started) * 1000)
                 # extracted is mutated in place by the pipeline; promote the
                 # principal and any errors into reserved top-level keys.
                 if ctx.principal is not None:
                     extracted["principal"] = ctx.principal.model_dump()
                 if ctx.errors:
                     extracted["enricher_errors"] = ctx.errors
+                self._emit_metrics(ctx, pipeline_ms)
         except Exception as exc:
             # Last-line defense — the pipeline shouldn't raise, but if anything
             # in the runbook does, no silent drop.
@@ -171,6 +185,55 @@ class CloudTrailRunbook(BaseRunbook):
             extracted=extracted,
             runbook_error=runbook_error,
         )
+
+    # ------------------------------------------------------------------
+    # Observability (Phase F)
+    # ------------------------------------------------------------------
+
+    def _emit_metrics(self, ctx: EnricherContext, pipeline_ms: int) -> None:
+        """Emit per-enricher / per-error / pipeline / cache metrics.
+
+        Always called from inside the ``enrich()`` try-block so its own
+        failures land in the runbook-level catch (``MetricsEmitter.emit``
+        is documented not to raise, but we keep the contract honest).
+        """
+        if self._emitter is None:
+            return
+
+        for timing in ctx.timings:
+            self._emitter.emit(
+                "enricher_duration_ms",
+                {
+                    "enricher": timing.get("enricher"),
+                    "duration_ms": timing.get("duration_ms"),
+                    "runbook": self.runbook_name,
+                },
+            )
+        for err in ctx.errors:
+            self._emitter.emit(
+                "enricher_error",
+                {
+                    "enricher": err.get("enricher"),
+                    "type": err.get("type"),
+                    "runbook": self.runbook_name,
+                },
+            )
+        self._emitter.emit(
+            "enricher_pipeline_duration_ms",
+            {
+                "runbook": self.runbook_name,
+                "duration_ms": pipeline_ms,
+                "stages_completed": ctx.stages_completed,
+            },
+        )
+
+        self._alerts_processed += 1
+        if self._alerts_processed % self._cache_stats_interval == 0:
+            stats = self._cache.stats()
+            self._emitter.emit(
+                "principal_cache_stats",
+                {**stats, "runbook": self.runbook_name},
+            )
 
     @staticmethod
     def _extract_basic_fields(alert: Alert) -> dict[str, Any]:

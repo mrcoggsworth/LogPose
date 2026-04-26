@@ -9,15 +9,13 @@ This is the **shared infrastructure** that runbooks compose. The
 runbook-specific enrichers (CloudTrail, GuardDuty, GCP audit) live in
 `logpose.enrichers.cloud.<provider>.<service>` and ship phase by phase.
 
-> **Status — Phase E (runbook orchestrator shipped).** Everything from
-> Phases A–D plus `CloudTrailRunbook` is now wired as a thin
-> orchestrator over the `EnricherPipeline`, gated by the
-> `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED` feature flag (default OFF).
-> When the flag is on, the runbook constructs boto3 clients + cache +
-> executor in `__init__`, builds the pipeline once, and `enrich()` runs
-> basic-field extraction → pipeline → returns `EnrichedAlert`. When
-> off, the legacy 6-field extraction is used and no AWS clients are
-> constructed. Phase F (metrics) lands next.
+> **Status — Phase F (observability shipped).** All six phases are in
+> place. The runbook now emits four metric event types via the existing
+> `MetricsEmitter` whenever the pipeline runs: `enricher_duration_ms`,
+> `enricher_error`, `enricher_pipeline_duration_ms`, and
+> `principal_cache_stats` (the last on a configurable interval). All
+> emission is gated by the same `LOGPOSE_CLOUDTRAIL_ENRICHERS_ENABLED`
+> flag — flag off means zero new metrics traffic, just like before.
 
 ---
 
@@ -384,6 +382,42 @@ extracted = {
 3. Once stable, flip the flag default to ON in a follow-up change and
    delete the legacy `_extract_basic_fields`-only path.
 
+### Observability (Phase F)
+
+When the pipeline is enabled and a `MetricsEmitter` is injected into the
+runbook, four event types are emitted via `emitter.emit(event, data)`:
+
+| Event | Per | Payload |
+|---|---|---|
+| `enricher_duration_ms` | enricher run | `{"enricher", "duration_ms", "runbook"}` |
+| `enricher_error` | enricher failure | `{"enricher", "type", "runbook"}` |
+| `enricher_pipeline_duration_ms` | alert | `{"runbook", "duration_ms", "stages_completed"}` |
+| `principal_cache_stats` | every N alerts (default 50) | `{"hits", "misses", "evictions", "size", "runbook"}` |
+
+`stages_completed` is incremented after each stage's `gather` returns,
+so a pipeline cut short by `total_budget_seconds` will report fewer
+than the configured number of stages. Combined with `duration_ms`, that
+gives operators an early signal when the budget is too tight for real
+traffic.
+
+The `runner.py` runner attaches per-enricher timings to
+`ctx.timings` (one entry per enricher, including failed ones) and the
+runbook emits them in `_emit_metrics`. The cache's `stats()` method
+(`hits`, `misses`, `evictions`, `size`) is the source for
+`principal_cache_stats`.
+
+**Operator knob (only read when the flag is on):**
+
+| Env var | Default | Effect |
+|---|---|---|
+| `LOGPOSE_CACHE_STATS_INTERVAL` | `50` | How often (in alerts processed) to emit `principal_cache_stats` |
+
+**Cache hit rate from metrics.** A cheap hit-rate proxy is the ratio of
+`enricher_duration_ms{enricher="principal_history"}` events that land
+under ~5 ms (cache hit) vs above ~50 ms (cache miss / real
+LookupEvents). The exact `principal_cache_stats` event gives the
+authoritative numbers.
+
 ### AssumedRole collapsing — why
 
 Two CloudTrail events from sessions of the same IAM role would produce
@@ -439,7 +473,7 @@ That's the whole contract — no base class, no decorators, no registration.
 | C | `EnricherPipeline` (async runner with timeout + error capture) | ✅ shipped |
 | D | CloudTrail enrichers: principal identity, history, write filter, object inspection | ✅ shipped |
 | E | Wire `CloudTrailRunbook` into the pipeline (orchestrator only) | ✅ shipped |
-| F | Metrics: cache hit rate, per-enricher duration, error counts | pending |
+| F | Metrics: cache hit rate, per-enricher duration, error counts | ✅ shipped |
 
 Each phase is independently shippable and revertable.
 
@@ -452,6 +486,7 @@ Each phase is independently shippable and revertable.
 - [`docs/tests/enrichers/runner-testing-walkthrough.md`](../tests/enrichers/runner-testing-walkthrough.md) — how to test the Phase C pipeline runner
 - [`docs/tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md`](../tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md) — how to test the Phase D CloudTrail enrichers (moto-backed)
 - [`docs/tests/runbooks/cloudtrail-runbook-testing-walkthrough.md`](../tests/runbooks/cloudtrail-runbook-testing-walkthrough.md) — Phase E orchestrator runbook walkthrough (legacy + flag-on paths, integration test)
+- [`docs/tests/enrichers/metrics-testing-walkthrough.md`](../tests/enrichers/metrics-testing-walkthrough.md) — Phase F observability metrics walkthrough
 - [`logpose/enrichers/principal.py`](../../logpose/enrichers/principal.py) — `Principal` + provider normalizers
 - [`logpose/enrichers/protocol.py`](../../logpose/enrichers/protocol.py) — `Enricher` Protocol
 - [`logpose/enrichers/context.py`](../../logpose/enrichers/context.py) — `EnricherContext` dataclass
