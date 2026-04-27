@@ -134,7 +134,7 @@ Every arrow in this diagram is a **durable RabbitMQ queue**. Pod restarts are sa
 | **Type-safe models** | Pydantic v2 frozen models for `Alert` and `EnrichedAlert` |
 | **OpenShift-ready** | Stateless pods, environment-variable configuration, Docker image included |
 | **Observability dashboard** | FastAPI backend + browser UI at :8080 — live queue depths, pipeline counters, route registry, runbook status |
-| **Extensive test coverage** | 19 unit test files + 6 integration tests driven by Docker Compose |
+| **Extensive test coverage** | 26 unit test files + 7 integration tests driven by Docker Compose |
 
 ---
 
@@ -631,11 +631,28 @@ LogPose/
 │   │   ├── base.py                  # BaseConsumer (abstract)
 │   │   ├── kafka_consumer.py        # Apache Kafka consumer
 │   │   ├── sqs_consumer.py          # AWS SQS + SNS envelope unwrapping
-│   │   └── pubsub_consumer.py       # GCP Pub/Sub pull consumer
+│   │   ├── pubsub_consumer.py       # GCP Pub/Sub pull consumer
+│   │   ├── splunk_es_consumer.py    # Splunk ES notable event polling consumer
+│   │   └── universal_consumer.py   # Universal HTTP POST /ingest consumer
 │   │
 │   ├── models/                      # Shared data models (Pydantic v2)
 │   │   ├── alert.py                 # Alert — normalized ingestion output
 │   │   └── enriched_alert.py        # EnrichedAlert — runbook output
+│   │
+│   ├── enrichers/                   # Enricher pipeline infrastructure
+│   │   ├── protocol.py              # Enricher protocol (structural subtyping)
+│   │   ├── context.py               # EnricherContext — per-alert pipeline state
+│   │   ├── principal.py             # Principal identity + AWS/GCP/AD normalizers
+│   │   ├── cache.py                 # PrincipalCache ABC + InProcessTTLCache
+│   │   ├── runner.py                # EnricherPipeline async runner (stages + timeouts)
+│   │   └── cloud/
+│   │       └── aws/
+│   │           └── cloudtrail/      # Concrete CloudTrail enrichers
+│   │               ├── schema.py    # CloudTrailEnrichment Pydantic schema
+│   │               ├── principal_identity.py
+│   │               ├── principal_history.py
+│   │               ├── write_filter.py
+│   │               └── object_inspection.py
 │   │
 │   ├── queue/                       # RabbitMQ abstraction layer
 │   │   ├── queues.py                # Queue name constants (single source of truth)
@@ -659,7 +676,7 @@ LogPose/
 │   │   ├── base.py                  # BaseRunbook (abstract)
 │   │   └── cloud/
 │   │       ├── aws/
-│   │       │   ├── cloudtrail.py    # CloudTrailRunbook
+│   │       │   ├── cloudtrail.py    # CloudTrailRunbook — orchestrator over enricher pipeline
 │   │       │   └── __main__.py
 │   │       └── gcp/
 │   │           ├── event_audit.py   # GcpEventAuditRunbook
@@ -668,7 +685,8 @@ LogPose/
 │   ├── forwarder/                   # Phase III: Splunk forwarding
 │   │   ├── splunk_client.py         # SplunkHECClient (batched, retrying)
 │   │   ├── enriched_forwarder.py    # Enriched alert → Splunk thread
-│   │   └── dlq_forwarder.py         # DLQ alert → Splunk thread
+│   │   ├── dlq_forwarder.py         # DLQ alert → Splunk thread
+│   │   └── universal_client.py     # HTTP forwarder for destination="universal" alerts
 │   │
 │   ├── metrics/                     # Pipeline metrics emission
 │   │   └── emitter.py               # MetricsEmitter — fire-and-forget to logpose.metrics queue
@@ -719,12 +737,14 @@ LogPose/
 Every ingestion source normalizes its raw event into an `Alert`. This is the contract between Phase I and Phase II.
 
 ```python
-class Alert(BaseModel, frozen=True):
-    id: UUID                        # Auto-generated UUID
-    source: Literal["kafka", "sqs", "pubsub"]
-    received_at: datetime           # UTC timestamp
+class Alert(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    source: str          # "kafka" | "sqs" | "pubsub" | "splunk_es" | "universal" | custom
+    received_at: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
     raw_payload: dict[str, Any]     # Original event — untouched
-    metadata: dict[str, Any]        # Source-specific metadata
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"frozen": True}
 ```
 
 **Kafka metadata:** `topic`, `partition`, `offset`, `key`  
@@ -917,20 +937,30 @@ black logpose/ tests/
 | Area | Test Files | Scope |
 |------|-----------|-------|
 | Data models | 2 | Immutability, serialization, defaults, edge cases |
-| Consumers | 1 | SQS SNS envelope unwrapping, error handling |
-| RabbitMQ | 2 | Publish/consume, acking/nacking, connection retries |
+| Consumers | 3 | SQS SNS envelope unwrapping, Splunk ES polling, universal HTTP ingest |
+| RabbitMQ | 3 | Publish/consume, acking/nacking, connection retries, Management API client |
 | Routing | 3 | Registry matching, router dispatch, DLQ behavior, all matchers |
-| Runbooks | 2 | Field extraction, graceful error handling |
-| Splunk Forwarder | 3 | HEC batching, retry on 429/5xx, DLQ forwarding, enriched forwarding |
-| Integration | 7 | End-to-end flows for Kafka, SQS, Pub/Sub, and routing pipeline |
+| Runbooks | 3 | Field extraction, graceful error handling, CloudTrail enricher metrics |
+| Enrichers | 7 | Principal normalization, cache TTL/LRU/eviction, async pipeline runner, four CloudTrail enrichers (moto-backed) |
+| Splunk Forwarder | 4 | HEC batching, retry on 429/5xx, DLQ forwarding, enriched forwarding, universal client |
+| Dashboard | 1 | MetricsStore thread safety and SQLite persistence |
+| Integration | 7 | End-to-end flows for Kafka, SQS, Pub/Sub, routing pipeline, CloudTrail enricher pipeline, and universal ingest |
 
 ### Documentation
 
-The `docs/tests/` directory contains in-depth testing walkthroughs for every component, written for developers who are new to event-driven architectures:
+The `docs/` directory contains component overviews and in-depth testing walkthroughs for every part of the pipeline.
 
 **Web UI & Dashboard**
 - [LogPose Dashboard Guide](docs/dashboard/logpose-dashboard-guide.md) — FastAPI backend + browser UI at :8080
 - [RabbitMQ Management UI Guide](docs/web-ui/rabbitmq-management-ui.md) — Queue monitoring UI at :15672
+
+**Enrichers**
+- [Enrichers Overview](docs/enrichers/README.md) — pipeline architecture, `Enricher` protocol, `EnricherContext`, principal cache, async runner, and all CloudTrail enrichers
+- [Principal Normalizers Walkthrough](docs/tests/enrichers/principal-testing-walkthrough.md)
+- [Cache Walkthrough](docs/tests/enrichers/cache-testing-walkthrough.md)
+- [Pipeline Runner Walkthrough](docs/tests/enrichers/runner-testing-walkthrough.md)
+- [CloudTrail Enrichers Walkthrough](docs/tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md) — moto-backed tests for all four enrichers
+- [Enricher Metrics Walkthrough](docs/tests/enrichers/metrics-testing-walkthrough.md)
 
 **Consumers**
 - [Kafka Consumer Walkthrough](docs/tests/consumers/kafka-testing-walkthrough.md)
@@ -1026,9 +1056,10 @@ Contributions are welcome. LogPose is intentionally structured to be easy to ext
 
 | Phase | Status | Description |
 |-------|--------|-------------|
-| **Phase I** | Complete | Multi-source alert ingestion (Kafka, SQS/SNS, Pub/Sub) with durable RabbitMQ queuing |
+| **Phase I** | Complete | Multi-source alert ingestion (Kafka, SQS/SNS, Pub/Sub, Splunk ES, Universal HTTP) with durable RabbitMQ queuing |
 | **Phase II** | Complete | Matcher-based routing engine with pod-isolated runbooks (CloudTrail, GuardDuty, EKS, GCP Event Audit) |
-| **Phase III** | Complete | Splunk HEC forwarding for enriched alerts and DLQ alerts |
+| **Phase III** | Complete | Splunk HEC forwarding for enriched alerts and DLQ alerts; universal HTTP forwarder |
+| **Enricher Pipeline** | Complete | Composable async enricher pipeline for CloudTrail — principal identity, history, write-call filter, object inspection; LRU/TTL cache; per-enricher and total-budget timeouts; full observability metrics |
 | **Phase IV** | Planned | Additional alert output destinations (e.g., PagerDuty, Slack, JIRA, webhook) |
 | **Phase V** | Planned | Runbook expansion — CrowdStrike, Microsoft Defender, AWS Security Hub, Azure Sentinel |
 | **Phase VI** | Planned | Observability — metrics (Prometheus), structured logging, distributed tracing (OpenTelemetry) |

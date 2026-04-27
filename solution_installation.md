@@ -8,9 +8,18 @@ for files.
 This guide deploys only the components that are implemented in the codebase
 today: one **SQS consumer**, the **router**, the three real runbooks
 (**CloudTrail**, **GCP Event Audit**, **Test**), the **Splunk forwarder**, and
-the **dashboard**. The roadmap items in `README.md` — GuardDuty, EKS —
-have no runbook class yet and are intentionally out of scope here. For the
-full architecture narrative, see the main [`README.md`](./README.md).
+the **dashboard**. The GuardDuty and EKS routes exist in the router but have no
+runbook class yet and are intentionally out of scope here. For the full
+architecture narrative, see the main [`README.md`](./README.md).
+
+> **CloudTrail enricher pipeline.** The CloudTrail runbook now runs a full
+> async enricher pipeline that makes live AWS API calls (CloudTrail
+> `LookupEvents`, S3 `HeadObject`, IAM `GetUser`/`GetRole`, EC2
+> `DescribeInstances`). The `logpose-runbook-cloudtrail` pod therefore requires
+> AWS credentials at runtime — see section 7.3. Two optional env vars tune
+> pipeline behaviour: `LOGPOSE_ENRICHER_TOTAL_BUDGET_SECONDS` (wall-clock cap
+> per alert, default `8.0`) and `LOGPOSE_CACHE_STATS_INTERVAL` (how often the
+> principal-cache hit-rate metric fires, default `50`).
 
 ---
 
@@ -76,7 +85,7 @@ flowchart TB
 | `rabbitmq`                | StatefulSet  | 1        | 5Gi PVC at `/var/lib/rabbitmq`           |
 | `logpose-consumer-sqs`    | Deployment   | 1        | Pulls from your AWS SQS queue            |
 | `logpose-router`          | Deployment   | 1        | Reads `alerts`, fans out to runbooks     |
-| `logpose-runbook-cloudtrail`     | Deployment   | 1 | Consumes `runbook.cloudtrail`          |
+| `logpose-runbook-cloudtrail`     | Deployment   | 1 | Consumes `runbook.cloudtrail`; calls CloudTrail, S3, IAM, EC2 APIs |
 | `logpose-runbook-gcp-event-audit`| Deployment   | 1 | Consumes `runbook.gcp.event_audit`     |
 | `logpose-runbook-test`           | Deployment   | 1 | Consumes `runbook.test` (smoke tests)  |
 | `logpose-forwarder`       | Deployment   | 1        | Drains `enriched` + `alerts.dlq` to Splunk |
@@ -95,6 +104,7 @@ Every pod depends on RabbitMQ, so the StatefulSet is installed first.
 | `docker`             | 24.0+ — used to build and push the image locally                    |
 | CRC resources        | **6 vCPU, 16 GiB RAM, 60 GiB disk** (8 pods + RabbitMQ PVC)         |
 | AWS SQS queue        | Queue URL + IAM access key / secret with `sqs:ReceiveMessage`, `sqs:DeleteMessage` |
+| AWS enricher perms   | Same or separate IAM credential with `cloudtrail:LookupEvents`, `s3:HeadObject`, `iam:GetUser`, `iam:GetRole`, `ec2:DescribeInstances` — used by the CloudTrail runbook pod |
 | Splunk HEC endpoint  | HEC URL + token; target index pre-created                           |
 | Splunk sourcetypes   | `logpose:enriched_alert` and `logpose:dlq_alert` configured         |
 
@@ -156,8 +166,11 @@ oc whoami -t | docker login --username "$(oc whoami)" --password-stdin "$HOST"
 # the image runs on the CRC node even when building from Apple Silicon /
 # non-amd64 hosts. --push streams the image directly to the registry
 # (equivalent to --output=type=registry) so no separate `docker push` is needed.
+
 docker buildx build \
   --platform linux/amd64 \
+  --provenance=false \
+  --sbom=false \
   --tag "$HOST/logpose/logpose:latest" \
   --push \
   .
@@ -363,6 +376,10 @@ EOF
 
 ### 7.3 Runbook — CloudTrail
 
+The CloudTrail runbook runs the full enricher pipeline and makes live AWS API
+calls. It must receive AWS credentials with the enricher permissions listed in
+the Prerequisites.
+
 ```bash
 oc apply -f - <<'EOF'
 apiVersion: apps/v1
@@ -381,6 +398,7 @@ spec:
         command: ["python", "-m", "logpose.runbooks.cloud.aws.cloudtrail"]
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
+        - secretRef: {name: logpose-aws}
         - configMapRef: {name: logpose-config}
 EOF
 ```
@@ -533,13 +551,16 @@ Run these in order. Each step should pass before moving to the next.
 
    Expect one `rabbitmq-0` plus seven `logpose-*` pods, all `1/1 Running`.
 
-2. **Router registered the three routes.**
+2. **Router registered all five routes.**
 
    ```bash
    oc logs deploy/logpose-router | grep "Registered routes"
    ```
 
-   Expect a list including the test, CloudTrail, and GCP audit routes.
+   Expect all five routes: `test`, `cloud.aws.cloudtrail`, `cloud.aws.guardduty`,
+   `cloud.aws.eks`, and `cloud.gcp.event_audit`. (GuardDuty and EKS routes are
+   registered by the router but no runbook pods consume those queues in this
+   install — unmatched alerts for those routes will queue until a runbook is deployed.)
 
 3. **Dashboard shows all expected queues.**
 

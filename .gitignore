@@ -159,3 +159,6 @@ dmypy.json
 
 # uv
 uv.lock
+py_files.txt
+
+graphify-out/cache/*
