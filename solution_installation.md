@@ -319,6 +319,12 @@ of Secrets/ConfigMaps it mounts. All blocks below target
 
 ### 7.1 SQS Consumer
 
+> ⚠️ **boto3 needs `AWS_DEFAULT_REGION`, not `AWS_REGION`**, when picking a
+> default region from the environment. The `logpose-aws` secret in §5 sets
+> `AWS_REGION`; the env var below promotes it to the boto3-canonical name so
+> the SQS pod (and the CloudTrail runbook in §7.3) can construct clients
+> without a `NoRegionError`.
+
 ```bash
 oc apply -f - <<'EOF'
 apiVersion: apps/v1
@@ -334,15 +340,11 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
-        command:
-        - python
-        - -c
-        - |
-          from logpose.consumers import SqsConsumer
-          from logpose.queue.rabbitmq import RabbitMQPublisher
-          c = SqsConsumer(); p = RabbitMQPublisher()
-          with c, p:
-              c.consume(p.publish)
+        command: ["python", "-m", "logpose.consumers.sqs_main"]
+        env:
+        - name: AWS_DEFAULT_REGION
+          valueFrom:
+            secretKeyRef: {name: logpose-aws, key: AWS_REGION}
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
         - secretRef: {name: logpose-aws}
@@ -395,7 +397,11 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
-        command: ["python", "-m", "logpose.runbooks.cloud.aws.cloudtrail"]
+        command: ["python", "-m", "logpose.runbooks.cloud.aws"]
+        env:
+        - name: AWS_DEFAULT_REGION
+          valueFrom:
+            secretKeyRef: {name: logpose-aws, key: AWS_REGION}
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
         - secretRef: {name: logpose-aws}
@@ -420,7 +426,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
-        command: ["python", "-m", "logpose.runbooks.cloud.gcp.event_audit"]
+        command: ["python", "-m", "logpose.runbooks.cloud.gcp"]
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
         - configMapRef: {name: logpose-config}
@@ -428,9 +434,6 @@ EOF
 ```
 
 ### 7.5 Runbook — Test (smoke-test sink)
-
-`test_runbook.py` does not define a `__main__` block, so start it by
-importing the class and calling `.run()` inline.
 
 ```bash
 oc apply -f - <<'EOF'
@@ -447,14 +450,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
-        command:
-        - python
-        - -c
-        - |
-          from logpose.runbooks.test_runbook import TestRunbook
-          rb = TestRunbook()
-          with rb:
-              rb.run()
+        command: ["python", "-m", "logpose.runbooks.test_runbook"]
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
         - configMapRef: {name: logpose-config}
@@ -605,14 +601,81 @@ Run these in order. Each step should pass before moving to the next.
 
 ## 9. Troubleshooting
 
+### 9.1 Quick reference
+
 | Symptom                                                  | Fix                                                                                     |
 |----------------------------------------------------------|-----------------------------------------------------------------------------------------|
 | Pods stuck `ImagePullBackOff`                            | `oc policy add-role-to-user system:image-puller system:serviceaccount:logpose:default -n logpose` |
 | `rabbitmq-0` `CrashLoopBackOff`                          | Check the PVC bound: `oc get pvc` — unbound PVC means no default storage class in CRC.  |
 | SQS consumer logs `AccessDenied` / `InvalidClientToken`  | Verify the four keys in the `logpose-aws` secret; rotate IAM creds if needed.           |
+| CloudTrail runbook crashes with `NoRegionError`          | Add `AWS_DEFAULT_REGION` env var (the deployment in §7.3 promotes it from the secret).  |
 | Forwarder logs TLS errors to Splunk                      | CRC's VM may need a corporate proxy/CA bundle — see Red Hat's CRC proxy documentation. |
 | Dashboard shows 0 queues                                 | Management API creds mismatch — compare `RABBITMQ_USER`/`RABBITMQ_PASS` in `logpose-rabbitmq` against `rabbitmq-default-user`. |
 | Runbook never consumes                                   | `oc logs deploy/logpose-router` — confirm the route is registered; empty list means the `logpose.routing.routes` import failed. |
+| Runbook pod restarts repeatedly with no error            | You're using the old install command (`python -m logpose.runbooks.cloud.aws.cloudtrail`). The module file has no `__main__` block, so Python imports and exits. Use the package-level form: `python -m logpose.runbooks.cloud.aws`. |
+
+### 9.2 "The SQS pod never pulls in any alerts"
+
+The most common reason is **silent boto3 misconfiguration**. The consumer's
+heartbeat now logs every ~2 minutes, so `oc logs` should show life within
+that window. Walk through these checks in order:
+
+```bash
+# 1. Is the pod actually running and not restart-looping?
+oc get pods -l app=logpose-consumer-sqs
+# RESTARTS should be 0 or 1, not climbing.
+
+# 2. What does the pod actually log?
+oc logs deploy/logpose-consumer-sqs --tail=200
+# Expect a line like:
+#   "SqsConsumer poll loop started (queue=https://sqs..., long_poll=20s, ...)"
+# followed by periodic "SqsConsumer heartbeat: ... polls=N messages_received=M".
+# If you see NO log lines at all, you're running the old inline-script
+# command from the legacy install — switch to `python -m logpose.consumers.sqs_main`
+# (already updated in §7.1).
+
+# 3. Are the env vars actually populated in the pod?
+oc exec deploy/logpose-consumer-sqs -- printenv | \
+  grep -E '^(AWS_|SQS_|RABBITMQ_)' | sort
+# Verify SQS_QUEUE_URL is the real queue URL (no <ACCT>/<QUEUE> placeholders left).
+# Verify AWS_DEFAULT_REGION is set (boto3 reads this, NOT AWS_REGION).
+
+# 4. Can the pod reach SQS with these creds at all?
+oc exec deploy/logpose-consumer-sqs -- python -c "
+import os, boto3
+sqs = boto3.client('sqs')
+print(sqs.get_queue_attributes(
+    QueueUrl=os.environ['SQS_QUEUE_URL'],
+    AttributeNames=['ApproximateNumberOfMessages','QueueArn']
+))"
+# Expected: prints {'Attributes': {...}, ...} including a non-zero
+# ApproximateNumberOfMessages if there are unread messages.
+# Errors here pinpoint the real issue (auth/region/queue URL).
+
+# 5. Is RabbitMQ reachable from the pod?
+oc exec deploy/logpose-consumer-sqs -- python -c "
+import os, pika
+pika.BlockingConnection(pika.URLParameters(os.environ['RABBITMQ_URL'])).close()
+print('RabbitMQ OK')"
+
+# 6. Send a smoke-test message and watch the pod log.
+aws sqs send-message --queue-url "$SQS_QUEUE_URL" \
+  --message-body '{"_logpose_test": true, "diag": "ping"}'
+oc logs deploy/logpose-consumer-sqs --tail=20 -f
+# Expect "Received alert <uuid> from SQS queue=..." within 20 seconds.
+```
+
+### 9.3 Verifying full pipeline flow
+
+If the SQS consumer is logging "Received alert" but the message never
+reaches Splunk, walk the queue chain in the dashboard or RabbitMQ UI:
+
+| Stage | Queue depth should | Diagnostic if stuck |
+|---|---|---|
+| Consumer → Router | `alerts` brief spike, drains | Router not running / not connected |
+| Router → Runbook | `runbook.<name>` brief spike | Runbook pod down, wrong runbook command (see §9.1 last row) |
+| Runbook → Forwarder | `enriched` brief spike | Runbook crashed in `enrich()`; check pod logs |
+| Forwarder → Splunk | `enriched` and `alerts.dlq` empty | HEC TLS / token / index issue; check forwarder logs |
 
 ---
 

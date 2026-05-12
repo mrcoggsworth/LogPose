@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 from logpose.consumers.base import BaseConsumer
 from logpose.metrics.emitter import MetricsEmitter
@@ -16,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 _POLL_WAIT_SECONDS = 20  # SQS long-poll duration (max 20s)
 _MAX_MESSAGES = 10
+_HEARTBEAT_EVERY_N_POLLS = 6  # log a heartbeat every ~2 minutes (6 * 20s)
+_TRANSIENT_ERROR_BACKOFF_SECONDS = 5
 
 
 class SqsConsumer(BaseConsumer):
@@ -68,10 +72,19 @@ class SqsConsumer(BaseConsumer):
             raise RuntimeError("Consumer is not connected. Call connect() first.")
 
         self._running = True
-        logger.info("SqsConsumer poll loop started")
+        logger.info(
+            "SqsConsumer poll loop started (queue=%s, long_poll=%ds, heartbeat=%dx polls)",
+            self._queue_url,
+            _POLL_WAIT_SECONDS,
+            _HEARTBEAT_EVERY_N_POLLS,
+        )
 
-        try:
-            while self._running:
+        polls_since_heartbeat = 0
+        total_polls = 0
+        total_messages = 0
+
+        while self._running:
+            try:
                 response = self._sqs.receive_message(  # type: ignore[union-attr]
                     QueueUrl=self._queue_url,
                     MaxNumberOfMessages=_MAX_MESSAGES,
@@ -79,11 +92,47 @@ class SqsConsumer(BaseConsumer):
                     AttributeNames=["All"],
                     MessageAttributeNames=["All"],
                 )
-                messages = response.get("Messages", [])
-                for msg in messages:
+            except KeyboardInterrupt:
+                logger.info("SqsConsumer poll loop interrupted")
+                return
+            except (ClientError, BotoCoreError) as exc:
+                # Transient AWS errors: log loudly, back off, keep polling.
+                # The pod stays alive so OpenShift / k8s doesn't show
+                # CrashLoopBackOff for what is often a recoverable blip.
+                logger.error(
+                    "SqsConsumer transient AWS error (queue=%s): %s — backing off %ds",
+                    self._queue_url,
+                    exc,
+                    _TRANSIENT_ERROR_BACKOFF_SECONDS,
+                )
+                time.sleep(_TRANSIENT_ERROR_BACKOFF_SECONDS)
+                continue
+
+            total_polls += 1
+            polls_since_heartbeat += 1
+            messages = response.get("Messages", [])
+            total_messages += len(messages)
+
+            for msg in messages:
+                try:
                     self._handle_message(msg, callback)
-        except KeyboardInterrupt:
-            logger.info("SqsConsumer poll loop interrupted")
+                except Exception as exc:
+                    # Don't kill the consumer on a single bad message —
+                    # the SQS visibility timeout will requeue it.
+                    logger.exception(
+                        "SqsConsumer failed to handle message id=%s: %s",
+                        msg.get("MessageId"),
+                        exc,
+                    )
+
+            if polls_since_heartbeat >= _HEARTBEAT_EVERY_N_POLLS:
+                logger.info(
+                    "SqsConsumer heartbeat: queue=%s polls=%d messages_received=%d",
+                    self._queue_url,
+                    total_polls,
+                    total_messages,
+                )
+                polls_since_heartbeat = 0
 
     def _handle_message(self, msg: dict, callback: Callable[[Alert], None]) -> None:
         body_str = msg.get("Body", "{}")

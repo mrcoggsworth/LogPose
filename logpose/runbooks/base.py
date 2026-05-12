@@ -101,14 +101,7 @@ class BaseRunbook(abc.ABC):
             content_type="application/json",
             delivery_mode=2,  # persistent
         )
-        if self._publisher._channel is None:
-            raise RuntimeError("Publisher channel is not open.")
-        self._publisher._channel.basic_publish(
-            exchange="",
-            routing_key=QUEUE_ENRICHED,
-            body=body,
-            properties=properties,
-        )
+        self._publisher.publish_to_queue(QUEUE_ENRICHED, body, properties)
 
         if self._emitter is not None:
             self._emitter.emit("runbook_success", {"runbook": self.runbook_name})

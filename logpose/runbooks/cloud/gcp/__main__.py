@@ -1,10 +1,10 @@
 """GCP Event Audit runbook pod entry point.
 
 Start with:
-    python -m logpose.runbooks.cloud.gcp.event_audit
+    python -m logpose.runbooks.cloud.gcp
 
 Or via the Dockerfile CMD override in OpenShift:
-    command: ["python", "-m", "logpose.runbooks.cloud.gcp.event_audit"]
+    command: ["python", "-m", "logpose.runbooks.cloud.gcp"]
 
 Environment variables required:
     RABBITMQ_URL — e.g. amqp://guest:guest@rabbitmq:5672/

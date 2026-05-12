@@ -1,12 +1,32 @@
-version: "3.9"
+# LogPose full-stack demo compose file.
+#
+# Start everything:
+#   docker compose -f docker/docker-compose.yml up -d --build
+#
+# Watch enriched alerts arrive at Splunk mock:
+#   docker logs logpose-splunk-hec-mock -f
+#
+# Inject a test CloudTrail alert via HTTP:
+#   curl -s -X POST http://localhost:8090/ingest \
+#     -H "Content-Type: application/json" \
+#     -d '{"raw_payload": {"eventName":"ConsoleLogin","eventSource":"signin.amazonaws.com","awsRegion":"us-east-1","userIdentity":{"type":"IAMUser","userName":"demo-user"},"sourceIPAddress":"1.2.3.4","responseElements":{"ConsoleLogin":"Success"}}}'
+#
+# RabbitMQ Management UI: http://localhost:15672  (guest / guest)
+# Dashboard:              http://localhost:8080
+# Splunk HEC mock:        http://localhost:8088/health
 
 services:
+
+  # ==========================================================================
+  # Infrastructure
+  # ==========================================================================
+
   rabbitmq:
     image: rabbitmq:3-management
     container_name: logpose-rabbitmq
     ports:
-      - "5672:5672"    # AMQP
-      - "15672:15672"  # Management UI — browse at http://localhost:15672 (guest/guest)
+      - "5672:5672"
+      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -54,7 +74,7 @@ services:
     image: localstack/localstack:3
     container_name: logpose-localstack
     ports:
-      - "4566:4566"  # LocalStack gateway (SNS + SQS)
+      - "4566:4566"
     environment:
       SERVICES: sns,sqs
       DEFAULT_REGION: us-east-1
@@ -80,6 +100,223 @@ services:
       timeout: 5s
       retries: 10
 
+  # ==========================================================================
+  # Splunk HEC mock  (log enriched alerts to stdout)
+  # ==========================================================================
+
+  splunk-hec-mock:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-splunk-hec-mock
+    command: ["python", "/scripts/splunk_hec_mock.py"]
+    volumes:
+      - ./splunk_hec_mock.py:/scripts/splunk_hec_mock.py:ro
+    ports:
+      - "8088:8088"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8088/health',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # One-shot init: create LocalStack SNS/SQS resources and Pub/Sub topics
+  # ==========================================================================
+
+  logpose-setup:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-setup
+    command: ["python", "/scripts/setup.py"]
+    volumes:
+      - ./setup.py:/scripts/setup.py:ro
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: logpose-dev
+    depends_on:
+      localstack:
+        condition: service_healthy
+      pubsub-emulator:
+        condition: service_healthy
+    restart: "no"
+
+  # ==========================================================================
+  # LogPose: consumers  (ingest layer)
+  # ==========================================================================
+
+  logpose-universal-consumer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-universal-consumer
+    command: ["python", "-m", "logpose.consumers.universal_consumer"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      UNIVERSAL_HTTP_HOST: "0.0.0.0"
+      UNIVERSAL_HTTP_PORT: "8090"
+    ports:
+      - "8090:8090"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  logpose-kafka-consumer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-kafka-consumer
+    command: ["python", "-m", "logpose.consumers.kafka_main"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_GROUP_ID: logpose-consumers
+      KAFKA_TOPICS: security-alerts
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  logpose-sqs-consumer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-sqs-consumer
+    command: ["python", "-m", "logpose.consumers.sqs_main"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/logpose-alerts
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      logpose-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  logpose-pubsub-consumer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-pubsub-consumer
+    command: ["python", "-m", "logpose.consumers.pubsub_main"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_PROJECT_ID: logpose-dev
+      PUBSUB_SUBSCRIPTION_ID: security-alerts-sub
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      logpose-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ==========================================================================
+  # LogPose: router  (Phase II — routes alerts to runbook queues)
+  # ==========================================================================
+
+  logpose-router:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-router
+    command: ["python", "-m", "logpose.router_main"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ==========================================================================
+  # LogPose: runbooks  (Phase II — enrichment pods)
+  # ==========================================================================
+
+  logpose-cloudtrail-runbook:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-cloudtrail-runbook
+    command: ["python", "-m", "logpose.runbooks.cloud.aws"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      # Uncomment to point enrichers at LocalStack (community edition supports
+      # cloudtrail, s3, iam, ec2 in limited form):
+      # AWS_ENDPOINT_URL: http://localstack:4566
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  logpose-gcp-runbook:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-gcp-runbook
+    command: ["python", "-m", "logpose.runbooks.cloud.gcp"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  logpose-test-runbook:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-test-runbook
+    command: ["python", "-m", "logpose.runbooks.test_runbook"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ==========================================================================
+  # LogPose: forwarder  (Phase III — ship enriched alerts to Splunk)
+  # ==========================================================================
+
+  logpose-forwarder:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-forwarder
+    command: ["python", "-m", "logpose.forwarder_main"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      SPLUNK_HEC_URL: http://splunk-hec-mock:8088/services/collector
+      SPLUNK_HEC_TOKEN: demo-token
+      SPLUNK_INDEX: logpose-demo
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      splunk-hec-mock:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ==========================================================================
+  # LogPose: dashboard
+  # ==========================================================================
+
   logpose-dashboard:
     build:
       context: ..
@@ -97,8 +334,4 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/overview', timeout=3).status == 200 else 1)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
+    restart: unless-stopped

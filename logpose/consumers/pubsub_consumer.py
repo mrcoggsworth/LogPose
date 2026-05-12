@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable
 
+from google.api_core import exceptions as gcp_exceptions
 from google.cloud import pubsub_v1
 from google.pubsub_v1.types import ReceivedMessage
 
@@ -15,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_MESSAGES = 10
 _ACK_DEADLINE_SECONDS = 60
+_HEARTBEAT_INTERVAL_SECONDS = 60
+_TRANSIENT_ERROR_BACKOFF_SECONDS = 5
 
 
 class PubSubConsumer(BaseConsumer):
@@ -57,10 +61,17 @@ class PubSubConsumer(BaseConsumer):
             raise RuntimeError("Consumer is not connected. Call connect() first.")
 
         self._running = True
-        logger.info("PubSubConsumer pull loop started")
+        logger.info(
+            "PubSubConsumer pull loop started (subscription=%s)",
+            self._subscription_path,
+        )
 
-        try:
-            while self._running:
+        last_heartbeat = time.monotonic()
+        total_pulls = 0
+        total_messages = 0
+
+        while self._running:
+            try:
                 response = self._subscriber.pull(
                     request={
                         "subscription": self._subscription_path,
@@ -68,23 +79,56 @@ class PubSubConsumer(BaseConsumer):
                     },
                     timeout=5.0,
                 )
-                if not response.received_messages:
-                    continue
+            except KeyboardInterrupt:
+                logger.info("PubSubConsumer pull loop interrupted")
+                return
+            except gcp_exceptions.DeadlineExceeded:
+                # Empty subscription / no messages within the pull timeout.
+                # This is the normal idle path — no log spam.
+                response = None
+            except gcp_exceptions.GoogleAPIError as exc:
+                logger.error(
+                    "PubSubConsumer transient pull error: %s — backing off %ds",
+                    exc,
+                    _TRANSIENT_ERROR_BACKOFF_SECONDS,
+                )
+                time.sleep(_TRANSIENT_ERROR_BACKOFF_SECONDS)
+                continue
 
+            total_pulls += 1
+
+            if response is not None and response.received_messages:
                 ack_ids: list[str] = []
                 for received_msg in response.received_messages:
-                    self._handle_message(received_msg, callback)
-                    ack_ids.append(received_msg.ack_id)
+                    try:
+                        self._handle_message(received_msg, callback)
+                        ack_ids.append(received_msg.ack_id)
+                        total_messages += 1
+                    except Exception as exc:
+                        logger.exception(
+                            "PubSubConsumer failed to handle message id=%s: %s",
+                            received_msg.message.message_id,
+                            exc,
+                        )
+                if ack_ids:
+                    try:
+                        self._subscriber.acknowledge(
+                            request={
+                                "subscription": self._subscription_path,
+                                "ack_ids": ack_ids,
+                            }
+                        )
+                    except gcp_exceptions.GoogleAPIError as exc:
+                        logger.error("PubSubConsumer ack failure: %s", exc)
 
-                # Acknowledge all successfully processed messages
-                self._subscriber.acknowledge(
-                    request={
-                        "subscription": self._subscription_path,
-                        "ack_ids": ack_ids,
-                    }
+            if time.monotonic() - last_heartbeat >= _HEARTBEAT_INTERVAL_SECONDS:
+                logger.info(
+                    "PubSubConsumer heartbeat: subscription=%s pulls=%d messages_received=%d",
+                    self._subscription_path,
+                    total_pulls,
+                    total_messages,
                 )
-        except KeyboardInterrupt:
-            logger.info("PubSubConsumer pull loop interrupted")
+                last_heartbeat = time.monotonic()
 
     def _handle_message(
         self, received_msg: ReceivedMessage, callback: Callable[[Alert], None]

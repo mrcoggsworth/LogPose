@@ -62,18 +62,88 @@ class RabbitMQPublisher:
             content_type="application/json",
             delivery_mode=pika.DeliveryMode.Persistent,  # type: ignore[attr-defined]
         )
+        self.publish_to_queue(QUEUE_NAME, body, properties)
+        logger.debug("Published alert %s from source=%s", alert.id, alert.source)
 
-        try:
-            self._channel.basic_publish(
-                exchange="",
-                routing_key=QUEUE_NAME,
-                body=body,
-                properties=properties,
+    def publish_to_queue(
+        self,
+        queue: str,
+        body: bytes,
+        properties: pika.BasicProperties | None = None,
+    ) -> None:
+        """Publish raw bytes to an arbitrary queue with auto-reconnect.
+
+        Used by the Router and Runbooks (they publish to runbook/enriched/dlq
+        queues, not the canonical 'alerts' queue). Two-strike: if the
+        channel/connection has gone stale (heartbeat timeout, broker
+        restart, network blip), reconnect and retry once. Without this,
+        long-idle publishers crash on the first message they try to
+        forward, and messages get stuck in re-delivery loops.
+        """
+        if self._channel is None or self._connection is None:
+            raise RuntimeError("Publisher is not connected. Call connect() first.")
+
+        if properties is None:
+            properties = pika.BasicProperties(
+                content_type="application/json",
+                delivery_mode=2,  # persistent
             )
-            logger.debug("Published alert %s from source=%s", alert.id, alert.source)
-        except pika.exceptions.AMQPError as exc:
-            logger.error("Failed to publish alert %s: %s", alert.id, exc)
-            raise
+
+        for attempt in (1, 2):
+            try:
+                if not self._is_alive():
+                    logger.warning(
+                        "RabbitMQ channel/connection closed; reconnecting before publish."
+                    )
+                    self._reconnect()
+                self._channel.basic_publish(  # type: ignore[union-attr]
+                    exchange="",
+                    routing_key=queue,
+                    body=body,
+                    properties=properties,
+                )
+                return
+            except (
+                pika.exceptions.ConnectionClosed,
+                pika.exceptions.ChannelClosed,
+                pika.exceptions.ChannelWrongStateError,
+                pika.exceptions.StreamLostError,
+            ) as exc:
+                if attempt == 1:
+                    logger.warning(
+                        "RabbitMQ publish to %s failed (attempt %d/2): %s — reconnecting.",
+                        queue,
+                        attempt,
+                        exc,
+                    )
+                    self._reconnect()
+                    continue
+                logger.error(
+                    "Failed to publish to queue=%s after retry: %s", queue, exc
+                )
+                raise
+            except pika.exceptions.AMQPError as exc:
+                logger.error("Failed to publish to queue=%s: %s", queue, exc)
+                raise
+
+    def _is_alive(self) -> bool:
+        return (
+            self._connection is not None
+            and self._connection.is_open
+            and self._channel is not None
+            and self._channel.is_open
+        )
+
+    def _reconnect(self) -> None:
+        try:
+            if self._connection is not None and self._connection.is_open:
+                self._connection.close()
+        except Exception:
+            pass
+        finally:
+            self._connection = None
+            self._channel = None
+        self.connect()
 
     def disconnect(self) -> None:
         try:

@@ -83,14 +83,7 @@ class Router:
                 content_type="application/json",
                 delivery_mode=2,  # persistent
             )
-            if self._publisher._channel is None:
-                raise RuntimeError("Publisher channel is not open.")
-            self._publisher._channel.basic_publish(
-                exchange="",
-                routing_key=route.queue,
-                body=body,
-                properties=properties,
-            )
+            self._publisher.publish_to_queue(route.queue, body, properties)
             logger.info(
                 "Routed alert %s -> route='%s' queue='%s'",
                 alert.id,
@@ -133,14 +126,7 @@ class Router:
             delivery_mode=2,  # persistent
         )
         try:
-            if self._publisher._channel is None:
-                raise RuntimeError("Publisher channel is not open.")
-            self._publisher._channel.basic_publish(
-                exchange="",
-                routing_key=QUEUE_DLQ,
-                body=body,
-                properties=properties,
-            )
+            self._publisher.publish_to_queue(QUEUE_DLQ, body, properties)
             logger.info("Published alert %s to DLQ (reason=%s)", alert.id, reason)
             if self._emitter is not None:
                 self._emitter.emit("dlq_enqueued", {"reason": reason})

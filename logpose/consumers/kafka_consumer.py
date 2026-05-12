@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
@@ -14,6 +15,9 @@ from logpose.models.alert import Alert
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_HEARTBEAT_INTERVAL_SECONDS = 60
+_TRANSIENT_ERROR_BACKOFF_SECONDS = 5
 
 
 class KafkaConsumer(BaseConsumer):
@@ -61,12 +65,31 @@ class KafkaConsumer(BaseConsumer):
             raise RuntimeError("Consumer is not connected. Call connect() first.")
 
         self._running = True
-        logger.info("KafkaConsumer poll loop started")
-        try:
-            while self._running:
+        logger.info(
+            "KafkaConsumer poll loop started (topics=%s, brokers=%s)",
+            self._topics,
+            self._bootstrap_servers,
+        )
+
+        last_heartbeat = time.monotonic()
+        total_messages = 0
+
+        while self._running:
+            try:
                 msg: Message | None = self._consumer.poll(timeout=1.0)
-                if msg is None:
-                    continue
+            except KeyboardInterrupt:
+                logger.info("KafkaConsumer poll loop interrupted")
+                return
+            except KafkaException as exc:
+                logger.error(
+                    "KafkaConsumer poll error: %s — backing off %ds",
+                    exc,
+                    _TRANSIENT_ERROR_BACKOFF_SECONDS,
+                )
+                time.sleep(_TRANSIENT_ERROR_BACKOFF_SECONDS)
+                continue
+
+            if msg is not None:
                 if msg.error():
                     if msg.error().code() == KafkaError._PARTITION_EOF:
                         logger.debug(
@@ -74,12 +97,31 @@ class KafkaConsumer(BaseConsumer):
                             msg.topic(),
                             msg.partition(),
                         )
-                        continue
-                    raise KafkaException(msg.error())
+                    else:
+                        logger.error(
+                            "KafkaConsumer message error: %s — backing off %ds",
+                            msg.error(),
+                            _TRANSIENT_ERROR_BACKOFF_SECONDS,
+                        )
+                        time.sleep(_TRANSIENT_ERROR_BACKOFF_SECONDS)
+                else:
+                    try:
+                        self._handle_message(msg, callback)
+                        total_messages += 1
+                    except Exception as exc:
+                        logger.exception(
+                            "KafkaConsumer failed to handle message offset=%s: %s",
+                            msg.offset() if msg else None,
+                            exc,
+                        )
 
-                self._handle_message(msg, callback)
-        except KeyboardInterrupt:
-            logger.info("KafkaConsumer poll loop interrupted")
+            if time.monotonic() - last_heartbeat >= _HEARTBEAT_INTERVAL_SECONDS:
+                logger.info(
+                    "KafkaConsumer heartbeat: topics=%s messages_received=%d",
+                    self._topics,
+                    total_messages,
+                )
+                last_heartbeat = time.monotonic()
 
     def stop(self) -> None:
         """Signal the consume loop to exit after the current poll completes."""

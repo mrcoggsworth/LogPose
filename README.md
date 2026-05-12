@@ -73,13 +73,13 @@ Each stage is a separate pod. Each pod communicates through durable queues. A cr
 │   matchers registered in RouteRegistry (first match wins).      │
 │                                                                 │
 │   Routes:  cloud → aws → cloudtrail                             │
-│                        → guardduty                             │
+│                        → guardduty                              │
 │                        → eks                                    │
 │            cloud → gcp → event_audit                            │
 │            test  → test_route (smoke test)                      │
 │                                                                 │
-│   No match? → alerts.dlq (with dlq_reason in payload)          │
-└───────────────┬─────────────────┬──────────────────────────────┘
+│   No match? → alerts.dlq (with dlq_reason in payload)           │
+└───────────────┬─────────────────┬──────────────────────────────-┘
                 │                 │
      per-route queues          alerts.dlq
                 │
@@ -100,7 +100,7 @@ Each stage is a separate pod. Each pod communicates through durable queues. A cr
 │                    PHASE III — FORWARDING                       │
 │                                                                 │
 │   EnrichedAlertForwarder    DLQForwarder                        │
-│   [enriched] queue  →       [alerts.dlq] queue  →              │
+│   [enriched] queue  →       [alerts.dlq] queue  →               │
 │   Splunk HEC                Splunk HEC                          │
 │   sourcetype: logpose:enriched_alert                            │
 │   sourcetype: logpose:dlq_alert                                 │

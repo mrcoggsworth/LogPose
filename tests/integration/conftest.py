@@ -22,6 +22,14 @@ from confluent_kafka import Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 from google.cloud import pubsub_v1
 
+# LocalStack accepts any credentials; boto3 raises NoCredentialsError if none
+# are present in the environment (no ~/.aws/credentials, no IAM role).
+# AWS_DEFAULT_REGION must also be set so boto3 clients constructed without an
+# explicit region (e.g. CloudTrailRunbook.__init__) don't raise NoRegionError.
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
 # ---------------------------------------------------------------------------
 # Connection constants — match .env.example / docker-compose.yml defaults
 # ---------------------------------------------------------------------------

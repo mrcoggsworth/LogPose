@@ -76,9 +76,9 @@ def test_router_publishes_to_matched_queue(
 
     router._route_alert(alert)
 
-    mock_channel.basic_publish.assert_called_once()
-    call_kwargs = mock_channel.basic_publish.call_args.kwargs
-    assert call_kwargs["routing_key"] == QUEUE_RUNBOOK_CLOUDTRAIL
+    mock_publisher.publish_to_queue.assert_called_once()
+    call_args = mock_publisher.publish_to_queue.call_args
+    assert call_args.args[0] == QUEUE_RUNBOOK_CLOUDTRAIL
 
 
 def test_router_publishes_to_dlq_on_no_match(
@@ -92,9 +92,9 @@ def test_router_publishes_to_dlq_on_no_match(
 
     router._route_alert(alert)
 
-    mock_channel.basic_publish.assert_called_once()
-    call_kwargs = mock_channel.basic_publish.call_args.kwargs
-    assert call_kwargs["routing_key"] == QUEUE_DLQ
+    mock_publisher.publish_to_queue.assert_called_once()
+    call_args = mock_publisher.publish_to_queue.call_args
+    assert call_args.args[0] == QUEUE_DLQ
 
 
 def test_router_dlq_payload_contains_dlq_reason(
@@ -108,7 +108,7 @@ def test_router_dlq_payload_contains_dlq_reason(
 
     router._route_alert(alert)
 
-    body = mock_channel.basic_publish.call_args.kwargs["body"]
+    body = mock_publisher.publish_to_queue.call_args.args[1]
     payload = json.loads(body)
     assert payload["dlq_reason"] == "no_route_matched"
     assert "alert" in payload
@@ -126,7 +126,7 @@ def test_router_dlq_payload_preserves_full_alert(
 
     router._route_alert(alert)
 
-    body = mock_channel.basic_publish.call_args.kwargs["body"]
+    body = mock_publisher.publish_to_queue.call_args.args[1]
     payload = json.loads(body)
     assert payload["alert"]["source"] == "pubsub"
     assert payload["alert"]["raw_payload"]["severity"] == "CRITICAL"
@@ -143,13 +143,13 @@ def test_router_publishes_to_dlq_on_publish_failure(
 
     call_count = 0
 
-    def fail_first_publish(**kwargs: Any) -> None:
+    def fail_first_publish(queue: str, body: bytes, properties: Any = None) -> None:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             raise pika.exceptions.AMQPError("connection lost")
 
-    mock_channel.basic_publish.side_effect = fail_first_publish
+    mock_publisher.publish_to_queue.side_effect = fail_first_publish
 
     router = _make_router(registry_with_cloudtrail, mock_publisher, mock_consumer)
     alert = _make_alert(eventSource="signin.amazonaws.com", eventVersion="1.08")
@@ -157,10 +157,10 @@ def test_router_publishes_to_dlq_on_publish_failure(
     with pytest.raises(pika.exceptions.AMQPError):
         router._route_alert(alert)
 
-    assert mock_channel.basic_publish.call_count == 2
-    dlq_call = mock_channel.basic_publish.call_args_list[1]
-    assert dlq_call.kwargs["routing_key"] == QUEUE_DLQ
+    assert mock_publisher.publish_to_queue.call_count == 2
+    dlq_call = mock_publisher.publish_to_queue.call_args_list[1]
+    assert dlq_call.args[0] == QUEUE_DLQ
 
-    body = dlq_call.kwargs["body"]
+    body = dlq_call.args[1]
     payload = json.loads(body)
     assert payload["dlq_reason"] == "publish_failed"

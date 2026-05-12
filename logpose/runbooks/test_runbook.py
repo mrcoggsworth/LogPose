@@ -1,6 +1,15 @@
+"""Test runbook — operational smoke-test sink.
+
+Run with:
+    python -m logpose.runbooks.test_runbook
+
+Environment variables required:
+    RABBITMQ_URL — e.g. amqp://guest:guest@rabbitmq:5672/
+"""
 from __future__ import annotations
 
 import logging
+import sys
 
 from logpose.models.alert import Alert
 from logpose.models.enriched_alert import EnrichedAlert
@@ -29,3 +38,21 @@ class TestRunbook(BaseRunbook):
             runbook=self.runbook_name,
             extracted=dict(alert.raw_payload),
         )
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
+    runbook = TestRunbook()
+    try:
+        runbook.run()
+    except KeyboardInterrupt:
+        logger.info("Received interrupt — shutting down TestRunbook.")
+        runbook.stop()
+
+
+if __name__ == "__main__":
+    main()
