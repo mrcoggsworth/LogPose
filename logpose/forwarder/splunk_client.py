@@ -37,6 +37,16 @@ _MAX_RETRY_ATTEMPTS = 3
 _RETRY_BASE_DELAY = 1.0  # seconds, doubled on each retry
 
 
+def _mask_token(value: str) -> str:
+    """Return a token-shaped value with all but the last 4 chars hidden."""
+    if not value:
+        return "<empty>"
+    s = value.split(" ", 1)[-1]  # strip "Splunk " prefix if present
+    if len(s) <= 4:
+        return "****"
+    return f"****{s[-4:]}"
+
+
 class SplunkHECClient:
     """Sends events to Splunk via HTTP Event Collector (HEC).
 
@@ -71,6 +81,20 @@ class SplunkHECClient:
             }
         )
         self._buffer: list[dict[str, Any]] = []
+        logger.info(
+            "SplunkHECClient initialized: url=%s index=%s batch_size=%d "
+            "token=%s scheme=%s",
+            self._url,
+            self._index,
+            self._batch_size,
+            _mask_token(self._token),
+            "http" if self._url.startswith("http://") else "https",
+        )
+        logger.debug(
+            "SplunkHECClient session headers: %s",
+            {k: (_mask_token(v) if k == "Authorization" else v)
+             for k, v in self._session.headers.items()},
+        )
 
     def build_event(
         self,
@@ -101,7 +125,15 @@ class SplunkHECClient:
     def send(self, event: dict[str, Any]) -> None:
         """Buffer an event, flushing automatically when the batch size is reached."""
         self._buffer.append(event)
+        logger.debug(
+            "Buffered event (buffer=%d/%d) source=%s sourcetype=%s",
+            len(self._buffer),
+            self._batch_size,
+            event.get("source"),
+            event.get("sourcetype"),
+        )
         if len(self._buffer) >= self._batch_size:
+            logger.debug("Batch size reached — auto-flushing")
             self.flush()
 
     def flush(self) -> None:
@@ -112,6 +144,7 @@ class SplunkHECClient:
         if all retry attempts fail or a permanent 4xx is received.
         """
         if not self._buffer:
+            logger.debug("flush() called but buffer is empty — no-op")
             return
 
         batch = self._buffer[:]
@@ -119,29 +152,59 @@ class SplunkHECClient:
 
         # HEC batch format: each event is a separate JSON object, newline-separated
         payload = "\n".join(json.dumps(evt) for evt in batch)
+        logger.info(
+            "Flushing %d event(s) to %s (payload=%d bytes)",
+            len(batch),
+            self._url,
+            len(payload),
+        )
+        logger.debug("Payload preview (first 500 chars): %s", payload[:500])
         self._post_with_retry(payload, event_count=len(batch))
 
     def _post_with_retry(self, payload: str, event_count: int) -> None:
         delay = _RETRY_BASE_DELAY
         for attempt in range(1, _MAX_RETRY_ATTEMPTS + 1):
+            logger.debug(
+                "POST attempt %d/%d -> %s (bytes=%d, events=%d, timeout=10s)",
+                attempt,
+                _MAX_RETRY_ATTEMPTS,
+                self._url,
+                len(payload),
+                event_count,
+            )
+            t0 = time.monotonic()
             try:
                 response = self._session.post(
                     self._url,
                     data=payload,
                     timeout=10,
                 )
+                elapsed = time.monotonic() - t0
+                logger.debug(
+                    "Response received in %.3fs: status=%d headers=%s body=%s",
+                    elapsed,
+                    response.status_code,
+                    dict(response.headers),
+                    response.text[:500],
+                )
+
                 if response.status_code == 200:
                     logger.info(
-                        "Sent %d event(s) to Splunk HEC (status=200)", event_count
+                        "Sent %d event(s) to Splunk HEC in %.3fs (status=200 body=%s)",
+                        event_count,
+                        elapsed,
+                        response.text[:200],
                     )
                     return
 
                 if response.status_code == 429 or response.status_code >= 500:
                     logger.warning(
-                        "Splunk HEC returned %d on attempt %d/%d — retrying in %.1fs",
+                        "Splunk HEC returned %d on attempt %d/%d (body=%s) "
+                        "— retrying in %.1fs",
                         response.status_code,
                         attempt,
                         _MAX_RETRY_ATTEMPTS,
+                        response.text[:200],
                         delay,
                     )
                     time.sleep(delay)
@@ -150,9 +213,10 @@ class SplunkHECClient:
 
                 # 4xx other than 429 is a permanent error — do not retry
                 logger.error(
-                    "Splunk HEC returned %d (permanent): %s",
+                    "Splunk HEC returned %d (permanent): headers=%s body=%s",
                     response.status_code,
-                    response.text[:200],
+                    dict(response.headers),
+                    response.text[:500],
                 )
                 raise RuntimeError(
                     f"Splunk HEC permanent error {response.status_code}: "
@@ -160,13 +224,17 @@ class SplunkHECClient:
                 )
 
             except requests.RequestException as exc:
+                elapsed = time.monotonic() - t0
                 logger.warning(
-                    "Splunk HEC request failed on attempt %d/%d: %s"
-                    " — retrying in %.1fs",
+                    "Splunk HEC request failed on attempt %d/%d after %.3fs: "
+                    "%s: %s — retrying in %.1fs",
                     attempt,
                     _MAX_RETRY_ATTEMPTS,
+                    elapsed,
+                    type(exc).__name__,
                     exc,
                     delay,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
                 time.sleep(delay)
                 delay *= 2
