@@ -168,3 +168,81 @@ def test_connect_retries_on_amqp_error() -> None:
 
         with pytest.raises(RuntimeError, match="Could not connect"):
             consumer.connect()
+
+
+# ---------------------------------------------------------------------------
+# Shared-connection path
+# ---------------------------------------------------------------------------
+
+def _make_shared_conn() -> tuple[MagicMock, MagicMock]:
+    mock_conn: MagicMock = MagicMock()
+    mock_channel: MagicMock = MagicMock()
+    mock_channel.is_open = True
+    mock_channel.is_closed = False
+    mock_conn.is_open = True
+    mock_conn.is_closed = False
+    mock_conn.channel.return_value = mock_channel
+    return mock_conn, mock_channel
+
+
+def test_shared_connection_does_not_open_own_connection() -> None:
+    """Consumer with a shared connection must not call pika.BlockingConnection."""
+    mock_conn, _ = _make_shared_conn()
+
+    with patch("logpose.queue.rabbitmq_consumer.pika.BlockingConnection") as mock_cls:
+        consumer = RabbitMQConsumer(queue=TEST_QUEUE, url=RABBITMQ_URL, connection=mock_conn)
+        consumer.connect()
+
+        mock_cls.assert_not_called()
+        assert consumer._connection is None
+        assert consumer._channel is not None
+
+
+def test_shared_connection_opens_channel_on_provided_conn() -> None:
+    mock_conn, mock_channel = _make_shared_conn()
+
+    consumer = RabbitMQConsumer(queue=TEST_QUEUE, url=RABBITMQ_URL, connection=mock_conn)
+    consumer.connect()
+
+    mock_conn.channel.assert_called_once()
+    assert consumer._channel is mock_channel
+
+
+def test_shared_connection_disconnect_does_not_close_conn() -> None:
+    """disconnect() on a shared consumer must close the channel but not the connection."""
+    mock_conn, mock_channel = _make_shared_conn()
+
+    consumer = RabbitMQConsumer(queue=TEST_QUEUE, url=RABBITMQ_URL, connection=mock_conn)
+    consumer.connect()
+    consumer.disconnect()
+
+    mock_channel.close.assert_called_once()
+    mock_conn.close.assert_not_called()
+
+
+def test_shared_connection_consume_acks_message() -> None:
+    """Consumer on a shared connection should still ack on successful callback."""
+    mock_conn, mock_channel = _make_shared_conn()
+
+    alert = Alert(source="kafka", raw_payload={"rule": "test"})
+    alert_json = alert.model_dump_json().encode()
+    received: list[Alert] = []
+
+    def callback(a: Alert) -> None:
+        received.append(a)
+
+    mock_method = MagicMock()
+    mock_method.delivery_tag = 77
+
+    def fake_start_consuming() -> None:
+        registered_cb = mock_channel.basic_consume.call_args.kwargs["on_message_callback"]
+        registered_cb(mock_channel, mock_method, MagicMock(), alert_json)
+
+    mock_channel.start_consuming.side_effect = fake_start_consuming
+
+    consumer = RabbitMQConsumer(queue=TEST_QUEUE, url=RABBITMQ_URL, connection=mock_conn)
+    consumer.connect()
+    consumer.consume(callback)
+
+    assert len(received) == 1
+    mock_channel.basic_ack.assert_called_once_with(delivery_tag=77)

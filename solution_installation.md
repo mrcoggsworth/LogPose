@@ -622,7 +622,8 @@ Run these in order. Each step should pass before moving to the next.
 | `rabbitmq-0` `CrashLoopBackOff`                          | Check the PVC bound: `oc get pvc` — unbound PVC means no default storage class in CRC.  |
 | SQS consumer logs `AccessDenied` / `InvalidClientToken`  | Verify the four keys in the `logpose-aws` secret; rotate IAM creds if needed.           |
 | CloudTrail runbook crashes with `NoRegionError`          | Add `AWS_DEFAULT_REGION` env var (the deployment in §7.3 promotes it from the secret).  |
-| Forwarder logs TLS errors to Splunk                      | CRC's VM may need a corporate proxy/CA bundle — see Red Hat's CRC proxy documentation. |
+| Forwarder logs TLS errors to Splunk                     podman push --tls-verify=false "$HOST/logpose/logpose:$SHA"
+podman push --tls-verify=false "$HOST/logpose/logpose:latest" | CRC's VM may need a corporate proxy/CA bundle — see Red Hat's CRC proxy documentation. |
 | Dashboard shows 0 queues                                 | Management API creds mismatch — compare `RABBITMQ_USER`/`RABBITMQ_PASS` in `logpose-rabbitmq` against `rabbitmq-default-user`. |
 | Runbook never consumes                                   | `oc logs deploy/logpose-router` — confirm the route is registered; empty list means the `logpose.routing.routes` import failed. |
 | Runbook pod restarts repeatedly with no error            | You're using the old install command (`python -m logpose.runbooks.cloud.aws.cloudtrail`). The module file has no `__main__` block, so Python imports and exits. Use the package-level form: `python -m logpose.runbooks.cloud.aws`. |

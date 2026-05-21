@@ -84,3 +84,88 @@ def test_connect_retries_on_amqp_error() -> None:
 
         with pytest.raises(RuntimeError, match="Could not connect"):
             publisher.connect()
+
+
+# ---------------------------------------------------------------------------
+# Shared-connection path
+# ---------------------------------------------------------------------------
+
+def _make_shared_conn() -> tuple[MagicMock, MagicMock]:
+    """Return (mock_conn, mock_channel) for shared-connection tests."""
+    mock_conn: MagicMock = MagicMock()
+    mock_channel: MagicMock = MagicMock()
+    mock_channel.is_open = True
+    mock_channel.is_closed = False
+    mock_conn.is_open = True
+    mock_conn.is_closed = False
+    mock_conn.channel.return_value = mock_channel
+    return mock_conn, mock_channel
+
+
+def test_shared_connection_does_not_open_own_connection() -> None:
+    """Publisher with a shared connection must not call pika.BlockingConnection."""
+    mock_conn, _ = _make_shared_conn()
+
+    with patch("logpose.queue.rabbitmq.pika.BlockingConnection") as mock_cls:
+        pub = RabbitMQPublisher(url=RABBITMQ_URL, connection=mock_conn)
+        pub.connect()
+
+        mock_cls.assert_not_called()
+        assert pub._connection is None
+        assert pub._channel is not None
+
+
+def test_shared_connection_opens_channel_on_provided_conn() -> None:
+    mock_conn, mock_channel = _make_shared_conn()
+
+    pub = RabbitMQPublisher(url=RABBITMQ_URL, connection=mock_conn)
+    pub.connect()
+
+    mock_conn.channel.assert_called_once()
+    assert pub._channel is mock_channel
+
+
+def test_shared_connection_disconnect_does_not_close_conn() -> None:
+    """disconnect() on a shared publisher must close the channel but not the connection."""
+    mock_conn, mock_channel = _make_shared_conn()
+
+    pub = RabbitMQPublisher(url=RABBITMQ_URL, connection=mock_conn)
+    pub.connect()
+    pub.disconnect()
+
+    mock_channel.close.assert_called_once()
+    mock_conn.close.assert_not_called()
+
+
+def test_shared_connection_reconnect_reopens_channel() -> None:
+    """_reconnect() on shared publisher closes old channel and opens a new one."""
+    mock_conn: MagicMock = MagicMock()
+    ch1: MagicMock = MagicMock()
+    ch2: MagicMock = MagicMock()
+    ch1.is_open = True
+    ch1.is_closed = False
+    mock_conn.is_open = True
+    mock_conn.channel.side_effect = [ch1, ch2]
+
+    pub = RabbitMQPublisher(url=RABBITMQ_URL, connection=mock_conn)
+    pub.connect()
+    assert pub._channel is ch1
+
+    pub._reconnect()
+
+    ch1.close.assert_called_once()
+    assert pub._channel is ch2
+    mock_conn.close.assert_not_called()
+
+
+def test_shared_connection_publish_uses_shared_channel() -> None:
+    mock_conn, mock_channel = _make_shared_conn()
+    mock_channel.is_open = True
+
+    alert = Alert(source="kafka", raw_payload={"rule": "test"})
+
+    pub = RabbitMQPublisher(url=RABBITMQ_URL, connection=mock_conn)
+    pub.connect()
+    pub.publish(alert)
+
+    mock_channel.basic_publish.assert_called_once()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,23 +37,52 @@ class Router:
         emitter: MetricsEmitter | None = None,
     ) -> None:
         self._registry = registry
+        self._url: str = url or os.environ["RABBITMQ_URL"]
+        self._emitter = emitter
+        # Exposed as instance attributes so unit tests can inject mocks before
+        # calling _route_alert() directly (tests never call run()).
         self._consumer = RabbitMQConsumer(queue=QUEUE_ALERTS, url=url)
         self._publisher = RabbitMQPublisher(url=url)
-        self._emitter = emitter
 
     def run(self) -> None:
-        """Connect and start the blocking consume/route loop."""
-        with self._publisher:
-            # Declare DLQ so it always exists before we need it
-            if self._publisher._channel is not None:
-                self._publisher._channel.queue_declare(queue=QUEUE_DLQ, durable=True)
+        """Connect and start the blocking consume/route loop.
 
-            with self._consumer:
-                logger.info(
-                    "Router started. Registered routes: %s",
-                    [r.name for r in self._registry.all_routes()],
-                )
-                self._consumer.consume(self._route_alert)
+        Opens ONE shared pika.BlockingConnection and creates publisher and
+        consumer on separate channels of that connection.  The consumer's
+        start_consuming() event loop drives heartbeat frames for the shared
+        connection, so the publisher channel never goes idle long enough for
+        RabbitMQ to reset it.
+        """
+        params = pika.URLParameters(self._url)
+        params.heartbeat = 60
+        params.blocked_connection_timeout = 300
+        shared_conn = pika.BlockingConnection(params)
+        logger.info("Shared RabbitMQ connection opened")
+
+        try:
+            self._publisher = RabbitMQPublisher(url=self._url, connection=shared_conn)
+            self._consumer = RabbitMQConsumer(
+                queue=QUEUE_ALERTS, url=self._url, connection=shared_conn
+            )
+
+            with self._publisher:
+                # Declare DLQ so it always exists before we need it.
+                if self._publisher._channel is not None:
+                    self._publisher._channel.queue_declare(queue=QUEUE_DLQ, durable=True)
+
+                with self._consumer:
+                    logger.info(
+                        "Router started. Registered routes: %s",
+                        [r.name for r in self._registry.all_routes()],
+                    )
+                    self._consumer.consume(self._route_alert)
+        finally:
+            try:
+                if shared_conn.is_open:
+                    shared_conn.close()
+                    logger.info("Shared RabbitMQ connection closed")
+            except Exception:
+                pass
 
         logger.info("Router stopped.")
 

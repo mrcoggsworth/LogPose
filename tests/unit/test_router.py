@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -130,6 +130,40 @@ def test_router_dlq_payload_preserves_full_alert(
     payload = json.loads(body)
     assert payload["alert"]["source"] == "pubsub"
     assert payload["alert"]["raw_payload"]["severity"] == "CRITICAL"
+
+
+def test_router_run_opens_single_shared_connection(
+    registry_with_cloudtrail: RouteRegistry,
+) -> None:
+    """run() must open exactly one pika.BlockingConnection shared between
+    publisher and consumer so the consumer's event loop drives heartbeats
+    for both channels (fixes idle-connection resets on the publisher)."""
+    mock_shared_conn = MagicMock()
+    mock_shared_conn.is_open = True
+
+    # Each call to shared_conn.channel() returns a fresh mock channel.
+    pub_channel = MagicMock()
+    pub_channel.is_open = True
+    pub_channel.is_closed = False
+    con_channel = MagicMock()
+    con_channel.is_open = True
+    con_channel.is_closed = False
+    mock_shared_conn.channel.side_effect = [pub_channel, con_channel]
+
+    # Make start_consuming() return immediately so run() exits cleanly.
+    con_channel.start_consuming.return_value = None
+
+    with patch("logpose.routing.router.pika.BlockingConnection") as mock_pika_cls:
+        mock_pika_cls.return_value = mock_shared_conn
+        router = Router(registry=registry_with_cloudtrail, url=RABBITMQ_URL)
+        router.run()
+
+    # Only one TCP connection should have been opened.
+    mock_pika_cls.assert_called_once()
+    # Both publisher and consumer opened channels on that single connection.
+    assert mock_shared_conn.channel.call_count == 2
+    # Connection is closed in the finally block.
+    mock_shared_conn.close.assert_called_once()
 
 
 def test_router_publishes_to_dlq_on_publish_failure(

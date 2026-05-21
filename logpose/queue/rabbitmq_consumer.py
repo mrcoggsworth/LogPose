@@ -27,6 +27,11 @@ class RabbitMQConsumer:
     On callback exception: message is nacked with requeue=False (the caller is
     responsible for routing to the DLQ before the exception propagates).
 
+    Pass ``connection`` to share an existing pika.BlockingConnection.  When
+    sharing, ``start_consuming()`` drives the event loop for the entire shared
+    connection so heartbeat frames flow for all channels — including a publisher
+    channel on the same connection — eliminating idle-connection resets.
+
     Config via environment:
       RABBITMQ_URL — amqp://user:pass@host:port/vhost
     """
@@ -35,13 +40,26 @@ class RabbitMQConsumer:
         self,
         queue: str,
         url: str | None = None,
+        *,
+        connection: pika.BlockingConnection | None = None,
     ) -> None:
         self._queue = queue
         self._url = url or os.environ["RABBITMQ_URL"]
+        self._shared: pika.BlockingConnection | None = connection
         self._connection: pika.BlockingConnection | None = None
         self._channel: pika.adapters.blocking_connection.BlockingChannel | None = None
 
     def connect(self) -> None:
+        if self._shared is not None:
+            self._channel = self._shared.channel()
+            self._channel.basic_qos(prefetch_count=_PREFETCH_COUNT)
+            self._declare_queue(self._queue)
+            logger.info(
+                "RabbitMQConsumer connected (shared connection), queue=%s",
+                self._queue,
+            )
+            return
+
         params = pika.URLParameters(self._url)
         params.heartbeat = 60
         params.blocked_connection_timeout = 300
@@ -135,14 +153,23 @@ class RabbitMQConsumer:
 
     def disconnect(self) -> None:
         try:
-            if self._connection and not self._connection.is_closed:
-                self._connection.close()
-                logger.info("RabbitMQConsumer disconnected from queue=%s", self._queue)
+            if self._channel and not self._channel.is_closed:
+                self._channel.close()
         except pika.exceptions.AMQPError as exc:
-            logger.warning("Error while disconnecting RabbitMQConsumer: %s", exc)
+            logger.warning("Error closing consumer channel: %s", exc)
         finally:
-            self._connection = None
             self._channel = None
+
+        # Only close the connection when we opened it ourselves.
+        if self._shared is None:
+            try:
+                if self._connection and not self._connection.is_closed:
+                    self._connection.close()
+                    logger.info("RabbitMQConsumer disconnected from queue=%s", self._queue)
+            except pika.exceptions.AMQPError as exc:
+                logger.warning("Error while disconnecting RabbitMQConsumer: %s", exc)
+            finally:
+                self._connection = None
 
     def _declare_queue(self, queue: str) -> None:
         """Declare a durable queue. Idempotent — safe to call on existing queues."""

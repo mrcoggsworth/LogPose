@@ -20,14 +20,32 @@ class RabbitMQPublisher:
 
     The queue is declared with durable=True and messages are published with
     delivery_mode=2 (persistent) so alerts survive broker or pod restarts.
+
+    Pass ``connection`` to share an existing pika.BlockingConnection (e.g. the
+    one owned by the Router so the consumer's event loop drives heartbeats for
+    both channels and prevents idle-connection resets).  When ``connection`` is
+    provided this class only manages a channel — it never opens or closes the
+    underlying TCP connection.
     """
 
-    def __init__(self, url: str | None = None) -> None:
+    def __init__(
+        self,
+        url: str | None = None,
+        *,
+        connection: pika.BlockingConnection | None = None,
+    ) -> None:
         self._url = url or os.environ["RABBITMQ_URL"]
+        self._shared: pika.BlockingConnection | None = connection
         self._connection: pika.BlockingConnection | None = None
         self._channel: pika.adapters.blocking_connection.BlockingChannel | None = None
 
     def connect(self) -> None:
+        if self._shared is not None:
+            self._channel = self._shared.channel()
+            self._channel.queue_declare(queue=QUEUE_NAME, durable=True)
+            logger.info("Connected to RabbitMQ (shared connection, channel opened)")
+            return
+
         params = pika.URLParameters(self._url)
         params.heartbeat = 60
         params.blocked_connection_timeout = 300
@@ -54,7 +72,7 @@ class RabbitMQPublisher:
         )
 
     def publish(self, alert: Alert) -> None:
-        if self._channel is None or self._connection is None:
+        if self._channel is None or not self._is_alive():
             raise RuntimeError("Publisher is not connected. Call connect() first.")
 
         body = alert.model_dump_json().encode()
@@ -80,7 +98,7 @@ class RabbitMQPublisher:
         long-idle publishers crash on the first message they try to
         forward, and messages get stuck in re-delivery loops.
         """
-        if self._channel is None or self._connection is None:
+        if self._channel is None:
             raise RuntimeError("Publisher is not connected. Call connect() first.")
 
         if properties is None:
@@ -127,14 +145,29 @@ class RabbitMQPublisher:
                 raise
 
     def _is_alive(self) -> bool:
+        conn = self._shared if self._shared is not None else self._connection
         return (
-            self._connection is not None
-            and self._connection.is_open
+            conn is not None
+            and conn.is_open
             and self._channel is not None
             and self._channel.is_open
         )
 
     def _reconnect(self) -> None:
+        if self._shared is not None:
+            # Shared connection is owned by the caller — only reopen the channel.
+            try:
+                if self._channel is not None and self._channel.is_open:
+                    self._channel.close()
+            except Exception:
+                pass
+            finally:
+                self._channel = None
+            self._channel = self._shared.channel()
+            self._channel.queue_declare(queue=QUEUE_NAME, durable=True)
+            logger.info("Reopened publisher channel on shared connection")
+            return
+
         try:
             if self._connection is not None and self._connection.is_open:
                 self._connection.close()
@@ -147,14 +180,23 @@ class RabbitMQPublisher:
 
     def disconnect(self) -> None:
         try:
-            if self._connection and not self._connection.is_closed:
-                self._connection.close()
-                logger.info("Disconnected from RabbitMQ")
+            if self._channel and not self._channel.is_closed:
+                self._channel.close()
         except pika.exceptions.AMQPError as exc:
-            logger.warning("Error while disconnecting from RabbitMQ: %s", exc)
+            logger.warning("Error closing publisher channel: %s", exc)
         finally:
-            self._connection = None
             self._channel = None
+
+        # Only close the connection when we opened it ourselves.
+        if self._shared is None:
+            try:
+                if self._connection and not self._connection.is_closed:
+                    self._connection.close()
+                    logger.info("Disconnected from RabbitMQ")
+            except pika.exceptions.AMQPError as exc:
+                logger.warning("Error while disconnecting from RabbitMQ: %s", exc)
+            finally:
+                self._connection = None
 
     def __enter__(self) -> "RabbitMQPublisher":
         self.connect()
