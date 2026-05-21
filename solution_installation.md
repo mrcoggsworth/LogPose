@@ -157,23 +157,29 @@ On macOS/Windows, set this via Docker Desktop → Settings → Docker Engine, th
 # From the repo root (directory containing the Dockerfile)
 HOST=$(oc registry info)
 
-# Authenticate Docker to the OpenShift internal registry using the current oc
+# Authenticate Podman to the OpenShift internal registry using the current oc
 # token. --password-stdin avoids leaking the token into shell history or the
 # process list (the -p flag is deprecated for this reason).
-oc whoami -t | docker login --username "$(oc whoami)" --password-stdin "$HOST"
+oc whoami -t | podman login --username "$(oc whoami)" --password-stdin "$HOST"
 
 # Build and push in a single step with buildx. --platform linux/amd64 ensures
 # the image runs on the CRC node even when building from Apple Silicon /
 # non-amd64 hosts. --push streams the image directly to the registry
 # (equivalent to --output=type=registry) so no separate `docker push` is needed.
 
-docker buildx build \
+# Build and tag
+
+SHA=$(git rev-parse --short HEAD)
+
+podman buildx build \
   --platform linux/amd64 \
-  --provenance=false \
-  --sbom=false \
+  --tag "$HOST/logpose/logpose:$SHA" \
   --tag "$HOST/logpose/logpose:latest" \
-  --push \
   .
+
+# Push both the SHA-pinned tag (for traceability) and :latest (what the Deployments pull)
+podman push --tls-verify=false "$HOST/logpose/logpose:$SHA"
+podman push --tls-verify=false "$HOST/logpose/logpose:latest"
 ```
 
 All Deployments below reference the image at the cluster-internal DNS name:
@@ -239,7 +245,7 @@ type: Opaque
 stringData:
   # Must match the password embedded in logpose-rabbitmq.RABBITMQ_URL.
   RABBITMQ_DEFAULT_USER: logpose
-  RABBITMQ_DEFAULT_PASS: <RABBIT-PASS>
+  RABBITMQ_DEFAULT_PASS: logpose2342
 ---
 apiVersion: v1
 kind: Service
@@ -340,6 +346,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
+        imagePullPolicy: Always
         command: ["python", "-m", "logpose.consumers.sqs_main"]
         env:
         - name: AWS_DEFAULT_REGION
@@ -369,6 +376,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
+        imagePullPolicy: Always
         command: ["python", "-m", "logpose.router_main"]
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
@@ -397,6 +405,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
+        imagePullPolicy: Always
         command: ["python", "-m", "logpose.runbooks.cloud.aws"]
         env:
         - name: AWS_DEFAULT_REGION
@@ -426,6 +435,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
+        imagePullPolicy: Always
         command: ["python", "-m", "logpose.runbooks.cloud.gcp"]
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
@@ -450,6 +460,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
+        imagePullPolicy: Always
         command: ["python", "-m", "logpose.runbooks.test_runbook"]
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
@@ -474,6 +485,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
+        imagePullPolicy: Always
         command: ["python", "-m", "logpose.forwarder_main"]
         envFrom:
         - secretRef: {name: logpose-rabbitmq}
@@ -499,6 +511,7 @@ spec:
       containers:
       - name: logpose
         image: image-registry.openshift-image-registry.svc:5000/logpose/logpose:latest
+        imagePullPolicy: Always
         command: ["python", "-m", "logpose.dashboard_main"]
         ports:
         - containerPort: 8080
@@ -679,7 +692,113 @@ reaches Splunk, walk the queue chain in the dashboard or RabbitMQ UI:
 
 ---
 
-## 10. Teardown
+## 10. Updating Deployments After a Code Change
+
+All LogPose deployments are configured with `imagePullPolicy: Always`. This
+means every time a pod is (re)started, OpenShift pulls the image from the
+internal registry rather than using a cached copy. The update workflow is
+therefore: **build → push `:latest` → rolling restart**.
+
+### 10.1 Full update workflow
+
+```bash
+# Step 1 — make sure you're logged in and in the right project
+eval $(crc oc-env)
+oc project logpose
+
+# Step 2 — run your test suite before building
+pytest
+flake8
+
+# Step 3 — rebuild and push both the SHA-pinned tag and :latest
+HOST=$(oc registry info)
+SHA=$(git rev-parse --short HEAD)
+
+oc whoami -t | podman login --username "$(oc whoami)" --password-stdin "$HOST"
+
+podman buildx build \
+  --platform linux/amd64 \
+  --tag "$HOST/logpose/logpose:$SHA" \
+  --tag "$HOST/logpose/logpose:latest" \
+  .
+
+podman push --tls-verify=false "$HOST/logpose/logpose:$SHA"
+podman push --tls-verify=false "$HOST/logpose/logpose:latest"
+
+# Step 4 — trigger a rolling restart on every LogPose Deployment
+# (RabbitMQ is a StatefulSet and its image never changes, so skip it)
+oc rollout restart deployment \
+  logpose-consumer-sqs \
+  logpose-router \
+  logpose-runbook-cloudtrail \
+  logpose-runbook-gcp-event-audit \
+  logpose-runbook-test \
+  logpose-forwarder \
+  logpose-dashboard
+
+# Step 5 — watch all rollouts complete before declaring success
+oc rollout status deployment/logpose-consumer-sqs          --timeout=120s
+oc rollout status deployment/logpose-router                --timeout=120s
+oc rollout status deployment/logpose-runbook-cloudtrail    --timeout=120s
+oc rollout status deployment/logpose-runbook-gcp-event-audit --timeout=120s
+oc rollout status deployment/logpose-runbook-test          --timeout=120s
+oc rollout status deployment/logpose-forwarder             --timeout=120s
+oc rollout status deployment/logpose-dashboard             --timeout=120s
+
+# Step 6 — confirm all pods are Running with the new image
+oc get pods
+```
+
+`oc rollout status` blocks until the deployment finishes (or times out), so you
+will see one "successfully rolled out" line per deployment when it's done.
+
+### 10.2 Updating only one deployment
+
+If you only changed code that affects a single workload (e.g., a runbook fix),
+you can restart just that deployment instead of all of them:
+
+```bash
+# Example: only the CloudTrail runbook changed
+oc rollout restart deployment/logpose-runbook-cloudtrail
+oc rollout status deployment/logpose-runbook-cloudtrail --timeout=120s
+```
+
+### 10.3 Verifying the new image is running
+
+After the rollout finishes, confirm the pods are using the image you just built:
+
+```bash
+# Shows the image SHA each pod is actually running
+oc get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+```
+
+The `imageID` field includes the digest of the pulled image. A new pull after a
+`:latest` push will show a different digest from the previous run.
+
+### 10.4 Rolling back a bad update
+
+If a deployment goes into `CrashLoopBackOff` after a rollout, revert to the
+previous ReplicaSet immediately:
+
+```bash
+# Undo the last rollout for a specific deployment
+oc rollout undo deployment/logpose-runbook-cloudtrail
+
+# Check rollout history to see available revisions
+oc rollout history deployment/logpose-runbook-cloudtrail
+
+# Roll back to a specific revision number
+oc rollout undo deployment/logpose-runbook-cloudtrail --to-revision=2
+```
+
+> **Note:** rollback restores the previous pod spec (environment, command,
+> etc.) but it re-pulls the image from the registry. If the broken image is
+> still tagged `:latest`, rollback alone may not help — push a known-good image
+> as `:latest` first, then restart.
+
+---
+
+## 11. Teardown
 
 ```bash
 oc delete project logpose

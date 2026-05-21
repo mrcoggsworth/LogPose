@@ -139,6 +139,7 @@ class SqsConsumer(BaseConsumer):
         try:
             body: dict = json.loads(body_str)
         except json.JSONDecodeError as exc:
+            logger.info(msg)
             logger.error("Failed to parse SQS message body: %s", exc)
             return
 
