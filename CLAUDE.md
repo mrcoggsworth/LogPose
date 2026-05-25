@@ -113,4 +113,97 @@ Keep iterating until the mistake rate measurably drops.
 
 ---
 
+## Project Tengen — Agentic Counterpart
+
+**Tengen** (`/home/user/Tengen`) is the head-to-head challenger to LogPose. It implements the identical SOAR pipeline — ingest → route → enrich → forward to Splunk — using the **Google ADK (Agent Development Kit)** framework instead of RabbitMQ workers and pods.
+
+### Purpose
+- Benchmark Google ADK orchestration against LogPose's manual queue-based architecture.
+- Comparison metrics: end-to-end latency per alert, throughput (alerts/s), error recovery time, and infrastructure overhead.
+- Tengen uses the same `Alert` and `EnrichedAlert` Pydantic models as LogPose to keep the data contract identical across both platforms.
+
+### Benchmark Rules
+- Both platforms process the same alert payloads from the same sources.
+- Measurement starts when the raw payload enters the system; ends when Splunk HEC acknowledges receipt.
+- Neither platform gets special tuning — default configs, same hardware.
+- Results live in `docs/benchmark/` in each repo as they are collected.
+
+---
+
+## Google ADK Framework Conventions
+
+Tengen uses [Google ADK](https://google.github.io/adk-docs/) to orchestrate agents. Follow these conventions when building or extending agents.
+
+### Agent Hierarchy
+```
+OrchestratorAgent (root)
+├── IngestionAgent(s)  — one per source: Kafka, SQS, PubSub, Universal
+├── RouterAgent        — deterministic route matching
+│   ├── CloudTrailRunbookAgent
+│   └── GCPAuditRunbookAgent
+└── ForwarderAgent     — Splunk HEC delivery
+```
+- The root `OrchestratorAgent` is the only entry point. Never call sub-agents directly from outside.
+- Agent transfer is explicit via ADK's `agent_transfer()` mechanism in the agent instruction.
+
+### Tools vs Sub-Agents
+| Use a **tool** for... | Use a **sub-agent** for... |
+|---|---|
+| Stateless I/O: API calls, DB lookups, parsing | Multi-step decisions that require state or branching |
+| Single well-defined output | Orchestrating multiple tool calls in sequence |
+| boto3 / GCP SDK calls | Runbook logic (stages 1→2→3 enrichment) |
+
+### No Separate Enricher Agent Layer
+Enrichers run as **tools directly inside the runbook agent** — not as a separate agent. The runbook agent's `instruction` enforces the staged call order:
+1. Stage 1 (sequential): `principal_identity_tool`
+2. Stage 2 (parallel): `principal_history_tool` + `write_filter_tool`
+3. Stage 3 (sequential): `object_inspection_tool`
+
+This mirrors `EnricherPipeline`'s `stages: list[list[Enricher]]` without adding an extra LLM hop — keeping the benchmark fair.
+
+### MCP Server Strategy
+One MCP server per external domain, connected via ADK's `MCPToolset`:
+- `aws_mcp_server.py` — exposes boto3 CloudTrail / S3 / IAM / EC2 as tools
+- `gcp_mcp_server.py` — exposes GCP audit log queries as tools
+- Splunk HEC is a plain ADK tool (thin HTTP POST wrapper), not a full MCP server.
+
+### Structured Handoff Between Agents
+Agents pass state as JSON-serialized `Alert` / `EnrichedAlert` strings in the ADK session. Always serialize with `model.model_dump_json()` and deserialize with `Model.model_validate_json()`. Never pass raw dicts across agent boundaries.
+
+### Error Handling
+- Each tool catches its own exceptions and returns a JSON error dict rather than raising.
+- Runbook agents populate `runbook_error` on the `EnrichedAlert` if any stage fails.
+- The orchestrator decides: retry the runbook agent or emit a DLQ event.
+- Never silently swallow errors — always surface them in the returned JSON.
+
+### Observability
+- Use ADK's built-in tracing for agent/tool call timing (replaces `MetricsEmitter`).
+- Structured logging at every tool boundary: `logger.info("tool=%s alert_id=%s", tool_name, alert_id)`.
+
+### Models Used
+```python
+# tengen/models/alert.py       — identical to logpose/models/alert.py
+# tengen/models/enriched_alert.py — identical to logpose/models/enriched_alert.py
+```
+Do not diverge these models. If LogPose's models change, sync Tengen's.
+
+---
+
+## Phase Mapping: LogPose → Tengen
+
+| LogPose Component | File(s) | Tengen Equivalent | File(s) |
+|---|---|---|---|
+| `BaseConsumer` + subclasses | `consumers/` | `IngestionAgent` per source | `agents/ingestion/` |
+| `RabbitMQPublisher/Consumer` | `queue/rabbitmq.py` | ADK session state (in-memory) | N/A — no queue between agents |
+| `Router` + `RouteRegistry` | `routing/` | `RouterAgent` + `match_route()` tool | `agents/router/` |
+| `BaseRunbook` + `enrich()` | `runbooks/base.py` | Runbook sub-agent + cloud tools | `agents/runbooks/` |
+| `EnricherPipeline` (staged async) | `enrichers/runner.py` | Staged tool calls in one agent turn | agent `instruction` |
+| Individual `Enricher` classes | `enrichers/cloud/aws/cloudtrail/` | Individual ADK tools | `tools/aws_tools.py` |
+| `EnrichedAlertForwarder` | `forwarder/enriched_forwarder.py` | `ForwarderAgent` | `agents/forwarder/` |
+| `SplunkHECClient` | `forwarder/splunk_client.py` | `splunk_hec_send()` ADK tool | `tools/splunk_tools.py` |
+| `MetricsEmitter` | `metrics/emitter.py` | ADK built-in tracing | framework |
+| `QUEUE_DLQ` | `queue/queues.py` | DLQ event emitted by orchestrator | orchestrator `instruction` |
+
+---
+
 _Update this file continuously. Every mistake Claude makes is a learning opportunity._
