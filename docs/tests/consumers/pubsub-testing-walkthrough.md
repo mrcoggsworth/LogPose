@@ -293,7 +293,7 @@ def test_privilege_escalation_event(mock_subscriber) -> None:
 | File | Purpose |
 |---|---|
 | [`logpose/consumers/pubsub_consumer.py`](../../../logpose/consumers/pubsub_consumer.py) | Consumer implementation — `_handle_message` decodes and normalizes messages |
-| [`tests/unit/test_pubsub_consumer.py`](../../unit/test_pubsub_consumer.py) | Unit tests with mocked Pub/Sub client and event fixtures |
-| [`tests/integration/test_pubsub_ingestion.py`](../test_pubsub_ingestion.py) | End-to-end integration test against the Pub/Sub emulator |
-| [`tests/integration/conftest.py`](../conftest.py) | `pubsub_clients` fixture — emulator health wait, topic and subscription creation |
+| `tests/unit/test_pubsub_consumer.py` *(planned)* | Unit tests with mocked Pub/Sub client and event fixtures |
+| [`tests/integration/test_pubsub_ingestion.py`](../../../tests/integration/test_pubsub_ingestion.py) | End-to-end integration test against the Pub/Sub emulator |
+| [`tests/integration/conftest.py`](../../../tests/integration/conftest.py) | `pubsub_clients` fixture — emulator health wait, topic and subscription creation |
 | [`docker/docker-compose.yml`](../../../docker/docker-compose.yml) | `pubsub-emulator` service definition (port 8085) |

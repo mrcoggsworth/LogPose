@@ -61,12 +61,12 @@ The following queues are used by LogPose. All of them appear under the **Queues*
 | Queue | Phase | What lives here |
 |-------|-------|-----------------|
 | `alerts` | I → II | Normalized `Alert` objects from all consumers (Kafka, SQS, Pub/Sub) |
-| `runbook.cloudtrail` | II | Routed alerts destined for the CloudTrail runbook pod |
-| `runbook.guardduty` | II | Routed alerts destined for the GuardDuty runbook pod |
-| `runbook.eks` | II | Routed alerts destined for the EKS runbook pod |
-| `runbook.gcp.event_audit` | II | Routed alerts destined for the GCP Event Audit runbook pod |
-| `runbook.test` | II | Smoke-test route — safe to publish to at any time |
-| `enriched` | II → III | `EnrichedAlert` objects produced by all runbook pods |
+| `workflow.cloudtrail` | II | Routed alerts destined for the CloudTrail workflow worker pod |
+| `workflow.guardduty` | II | Routed alerts destined for the GuardDuty workflow worker pod |
+| `workflow.eks` | II | Routed alerts destined for the EKS workflow worker pod |
+| `workflow.gcp.event_audit` | II | Routed alerts destined for the GCP Event Audit workflow worker pod |
+| `workflow.test` | II | Smoke-test route — safe to publish to at any time |
+| `enriched` | II → III | `EnrichedAlert` objects produced by all workflow worker pods |
 | `alerts.dlq` | II / III | Unroutable alerts and failed processing attempts |
 | `logpose.metrics` | Dashboard | Small JSON metrics events emitted by the dashboard service |
 
@@ -145,21 +145,25 @@ Go to **Queues** → click `alerts`. You should see **Messages: 1** in the queue
 python -m logpose.router_main
 ```
 
-Watch the UI: the `alerts` queue drains to 0 and `runbook.cloudtrail` shows 1 message (because the payload matched the CloudTrail route).
+Watch the UI: the `alerts` queue drains to 0 and `workflow.cloudtrail` shows 1 message (because the payload matched the CloudTrail route).
 
-### Step 4 — Start the CloudTrail Runbook
+### Step 4 — Start the CloudTrail Workflow Worker
 
 ```sh
-python -m logpose.runbooks.cloud.aws.cloudtrail
+LOGPOSE_ROUTE=cloud.aws.cloudtrail \
+N8N_WEBHOOK_URL=http://localhost:5678/webhook/cloudtrail \
+python -m logpose.workflows.worker_main
 ```
 
-Watch the UI: `runbook.cloudtrail` drains to 0 and the `enriched` queue shows 1 message.
+(Point `N8N_WEBHOOK_URL` at your N8N instance, or at the demo mock started with `python docker/n8n_workflow_mock.py`.)
+
+Watch the UI: `workflow.cloudtrail` drains to 0 and the `enriched` queue shows 1 message.
 
 ### Step 5 — Inspect the enriched message
 
 Click the `enriched` queue → scroll down to **Get messages** → set Count to 1, Ack mode to **Nack message requeue true** (non-destructive) → click **Get Message(s)**.
 
-The payload is a full `EnrichedAlert` JSON with `alert`, `runbook`, `enriched_at`, and `extracted` fields.
+The payload is a full `EnrichedAlert` JSON with `alert`, `workflow`, `enriched_at`, and `extracted` fields.
 
 ---
 
@@ -229,7 +233,7 @@ Run the Router (`python -m logpose.router_main`), then inspect `alerts.dlq` in t
 
 You can publish messages directly from the browser without any Python:
 
-1. Go to **Queues** → click the target queue (e.g., `runbook.test`)
+1. Go to **Queues** → click the target queue (e.g., `workflow.test`)
 2. Scroll down to the **Publish message** panel
 3. Set **Delivery mode** to `2` (persistent — survives broker restart)
 4. Set **Content type** to `application/json`

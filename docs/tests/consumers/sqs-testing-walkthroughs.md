@@ -296,7 +296,7 @@ Pass it directly as `DIRECT_SQS_MESSAGE` or wrapped in `SNS_ENVELOPE` to `consum
 | File | Purpose |
 |---|---|
 | [`logpose/consumers/sqs_consumer.py`](../../../logpose/consumers/sqs_consumer.py) | Consumer implementation — `_handle_message` does the envelope unwrapping |
-| [`tests/unit/test_sqs_consumer.py`](../../unit/test_sqs_consumer.py) | Unit tests with mocked SQS and CloudTrail event fixtures |
-| [`tests/integration/test_sqs_ingestion.py`](../test_sqs_ingestion.py) | End-to-end integration test against LocalStack |
-| [`tests/integration/conftest.py`](../conftest.py) | Fixtures: LocalStack setup, SNS topic, SQS queue, subscription wiring |
+| [`tests/unit/test_sqs_consumer.py`](../../../tests/unit/test_sqs_consumer.py) | Unit tests with mocked SQS and CloudTrail event fixtures |
+| [`tests/integration/test_sqs_ingestion.py`](../../../tests/integration/test_sqs_ingestion.py) | End-to-end integration test against LocalStack |
+| [`tests/integration/conftest.py`](../../../tests/integration/conftest.py) | Fixtures: LocalStack setup, SNS topic, SQS queue, subscription wiring |
 | [`docker/docker-compose.yml`](../../../docker/docker-compose.yml) | LocalStack service definition |

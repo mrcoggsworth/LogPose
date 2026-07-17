@@ -716,12 +716,14 @@ LogPose/
 │   │   └── logpose-dashboard-guide.md
 │   ├── web-ui/                      # RabbitMQ Management UI guide
 │   │   └── rabbitmq-management-ui.md
+│   ├── workflows/                   # N8N execution layer guide
+│   ├── udm/                         # UDM normalization guide
+│   ├── refactor/                    # Design records (runbooks → N8N + UDM)
 │   └── tests/                       # Testing walkthroughs for every component
 │       ├── consumers/
 │       ├── queue/
 │       ├── routing/
 │       ├── models/
-│       ├── runbooks/                # (historic — superseded by N8N workflows)
 │       ├── forwarder/               # Phase III forwarder walkthroughs
 │       └── integration/             # Integration test walkthroughs
 │
@@ -963,10 +965,9 @@ black logpose/ tests/
 | RabbitMQ | 3 | Publish/consume, acking/nacking, connection retries, Management API client |
 | Routing | 3 | Registry matching, router dispatch, DLQ behavior, all matchers |
 | Workflows | 3 | N8N client retries/auth, worker response contract + DLQ paths, UDM mappers/models |
-| Enrichers | 7 | Principal normalization, cache TTL/LRU/eviction, async pipeline runner, four CloudTrail enrichers (moto-backed) |
 | Splunk Forwarder | 4 | HEC batching, retry on 429/5xx, DLQ forwarding, enriched forwarding, universal client |
 | Dashboard | 1 | MetricsStore thread safety and SQLite persistence |
-| Integration | 7 | End-to-end flows for Kafka, SQS, Pub/Sub, routing pipeline, CloudTrail enricher pipeline, and universal ingest |
+| Integration | 7 | End-to-end flows for Kafka, SQS, Pub/Sub, routing + workflow pipeline, Splunk forwarding, and universal ingest |
 
 ### Documentation
 
@@ -976,13 +977,10 @@ The `docs/` directory contains component overviews and in-depth testing walkthro
 - [LogPose Dashboard Guide](docs/dashboard/logpose-dashboard-guide.md) — FastAPI backend + browser UI at :8080
 - [RabbitMQ Management UI Guide](docs/web-ui/rabbitmq-management-ui.md) — Queue monitoring UI at :15672
 
-**Enrichers**
-- [Enrichers Overview](docs/enrichers/README.md) — pipeline architecture, `Enricher` protocol, `EnricherContext`, principal cache, async runner, and all CloudTrail enrichers
-- [Principal Normalizers Walkthrough](docs/tests/enrichers/principal-testing-walkthrough.md)
-- [Cache Walkthrough](docs/tests/enrichers/cache-testing-walkthrough.md)
-- [Pipeline Runner Walkthrough](docs/tests/enrichers/runner-testing-walkthrough.md)
-- [CloudTrail Enrichers Walkthrough](docs/tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md) — moto-backed tests for all four enrichers
-- [Enricher Metrics Walkthrough](docs/tests/enrichers/metrics-testing-walkthrough.md)
+**Workflows & UDM (Phase II enrichment)**
+- [Workflows Overview](docs/workflows/README.md) — N8N execution layer: client, worker, response contract, failure semantics
+- [UDM Overview](docs/udm/README.md) — Unified Data Model normalization: mappers, dispatcher, adding a mapper
+- [Refactor Plan](docs/refactor/n8n-udm-refactor-plan.md) — design record for the runbooks → N8N + UDM migration
 
 **Consumers**
 - [Kafka Consumer Walkthrough](docs/tests/consumers/kafka-testing-walkthrough.md)
@@ -999,11 +997,6 @@ The `docs/` directory contains component overviews and in-depth testing walkthro
 
 **Models**
 - [EnrichedAlert Model Walkthrough](docs/tests/models/enriched-alert-testing-walkthrough.md)
-
-**Runbooks** *(historic — enrichment now lives in N8N workflows; see [the refactor plan](docs/refactor/n8n-udm-refactor-plan.md))*
-- [CloudTrail Runbook Walkthrough](docs/tests/runbooks/cloudtrail-runbook-testing-walkthrough.md)
-- [GCP Event Audit Runbook Walkthrough](docs/tests/runbooks/gcp-event-audit-runbook-testing-walkthrough.md)
-- [Test Runbook Walkthrough](docs/tests/runbooks/test-runbook-testing-walkthrough.md)
 
 **Splunk Forwarder (Phase III)**
 - [SplunkHECClient Walkthrough](docs/tests/forwarder/splunk-client-testing-walkthrough.md)
@@ -1081,7 +1074,8 @@ Contributions are welcome. LogPose is intentionally structured to be easy to ext
 | **Phase I** | Complete | Multi-source alert ingestion (Kafka, SQS/SNS, Pub/Sub, Splunk ES, Universal HTTP) with durable RabbitMQ queuing |
 | **Phase II** | Complete | Matcher-based routing engine with UDM normalization and pod-isolated N8N workflow workers (CloudTrail, GuardDuty, EKS, GCP Event Audit) |
 | **Phase III** | Complete | Splunk HEC forwarding for enriched alerts and DLQ alerts; universal HTTP forwarder |
-| **Enricher Pipeline** | Complete | Composable async enricher pipeline for CloudTrail — principal identity, history, write-call filter, object inspection; LRU/TTL cache; per-enricher and total-budget timeouts; full observability metrics |
+| **UDM Normalization** | Complete | Chronicle-style Unified Data Model attached to every routed alert — per-route mappers with fail-open generic fallback |
+| **N8N Workflow Execution** | Complete | Per-route workflow worker pods delegating enrichment to N8N webhooks with retries, auth, and DLQ on failure |
 | **Phase IV** | Planned | Additional alert output destinations (e.g., PagerDuty, Slack, JIRA, webhook) |
 | **Phase V** | Planned | Workflow expansion — CrowdStrike, Microsoft Defender, AWS Security Hub, Azure Sentinel |
 | **Phase VI** | Planned | Observability — metrics (Prometheus), structured logging, distributed tracing (OpenTelemetry) |

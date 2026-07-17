@@ -6,7 +6,7 @@ The `logpose.queue` package is the messaging backbone of the LogPose SOAR platfo
 2. **`rabbitmq.py`** — `RabbitMQPublisher`, the write side: connects to RabbitMQ and publishes `Alert` objects as durable JSON messages.
 3. **`rabbitmq_consumer.py`** — `RabbitMQConsumer`, the read side: connects, subscribes to a named queue, and delivers deserialized `Alert` objects to a callback.
 
-These three components appear throughout the codebase. Consumers write to `QUEUE_ALERTS` via `RabbitMQPublisher`. The router reads from `QUEUE_ALERTS` via `RabbitMQConsumer` and writes to runbook queues. Each runbook pod reads its queue via `RabbitMQConsumer` and writes enriched results to `QUEUE_ENRICHED`. The forwarder reads from `QUEUE_ENRICHED` and `QUEUE_DLQ`.
+These three components appear throughout the codebase. Consumers write to `QUEUE_ALERTS` via `RabbitMQPublisher`. The router reads from `QUEUE_ALERTS` via `RabbitMQConsumer` and writes to workflow queues. Each workflow worker pod reads its queue via `RabbitMQConsumer` and writes enriched results to `QUEUE_ENRICHED`. The forwarder reads from `QUEUE_ENRICHED` and `QUEUE_DLQ`.
 
 ---
 
@@ -31,15 +31,15 @@ All queue names in the platform are defined as module-level string constants in 
 QUEUE_ALERTS               = "alerts"
                              ↑ Ingest queue — consumers write here, router reads here
 
-QUEUE_RUNBOOK_CLOUDTRAIL   = "runbook.cloudtrail"
-QUEUE_RUNBOOK_GUARDDUTY    = "runbook.guardduty"
-QUEUE_RUNBOOK_EKS          = "runbook.eks"
-QUEUE_RUNBOOK_GCP_EVENT_AUDIT = "runbook.gcp.event_audit"
-QUEUE_RUNBOOK_TEST         = "runbook.test"
-                             ↑ Runbook destination queues — router writes, runbooks read
+QUEUE_WORKFLOW_CLOUDTRAIL   = "workflow.cloudtrail"
+QUEUE_WORKFLOW_GUARDDUTY    = "workflow.guardduty"
+QUEUE_WORKFLOW_EKS          = "workflow.eks"
+QUEUE_WORKFLOW_GCP_EVENT_AUDIT = "workflow.gcp.event_audit"
+QUEUE_WORKFLOW_TEST         = "workflow.test"
+                             ↑ Workflow destination queues — router writes, workers read
 
 QUEUE_ENRICHED             = "enriched"
-                             ↑ Enriched output — runbooks write, forwarder reads
+                             ↑ Enriched output — workers write, forwarder reads
 
 QUEUE_DLQ                  = "alerts.dlq"
                              ↑ Dead-letter queue — router writes unroutable alerts here
@@ -47,9 +47,9 @@ QUEUE_DLQ                  = "alerts.dlq"
 QUEUE_METRICS              = "logpose.metrics"
                              ↑ Observability — MetricsEmitter writes, dashboard reads
 
-ALL_RUNBOOK_QUEUES         = (QUEUE_RUNBOOK_CLOUDTRAIL, QUEUE_RUNBOOK_GUARDDUTY,
-                               QUEUE_RUNBOOK_EKS, QUEUE_RUNBOOK_GCP_EVENT_AUDIT,
-                               QUEUE_RUNBOOK_TEST)
+ALL_WORKFLOW_QUEUES         = (QUEUE_WORKFLOW_CLOUDTRAIL, QUEUE_WORKFLOW_GUARDDUTY,
+                               QUEUE_WORKFLOW_EKS, QUEUE_WORKFLOW_GCP_EVENT_AUDIT,
+                               QUEUE_WORKFLOW_TEST)
                              ↑ Convenience tuple for test fixtures and declarations
 ```
 
@@ -64,7 +64,7 @@ consumers
                               ┌────────────────┼─────────────────────────┐
                               │                │                          │
                               ▼                ▼                          ▼
-                    [runbook.cloudtrail] [runbook.gcp.event_audit] [runbook.test]
+                    [workflow.cloudtrail] [workflow.gcp.event_audit] [workflow.test]
                               │                │                          │
                               └────────────────┼──────────────────────────┘
                                                ▼
@@ -119,7 +119,7 @@ with RabbitMQPublisher() as publisher:
 
 ### Hardcoded queue name
 
-`RabbitMQPublisher` always publishes to `QUEUE_ALERTS` (`"alerts"`). This is the ingest queue — the only queue that consumers ever publish to. Other queues (runbook queues, the enriched queue) are written to by the router and runbooks directly, not through `RabbitMQPublisher`.
+`RabbitMQPublisher` always publishes to `QUEUE_ALERTS` (`"alerts"`). This is the ingest queue — the only queue that consumers ever publish to. Other queues (workflow queues, the enriched queue) are written to via `publish_to_queue()` by the router and workers, not through `publish()`.
 
 ---
 
@@ -127,13 +127,13 @@ with RabbitMQPublisher() as publisher:
 
 **File:** `logpose/queue/rabbitmq_consumer.py`
 
-`RabbitMQConsumer` is the read side. Unlike `RabbitMQPublisher` which is hardcoded to the `alerts` queue, `RabbitMQConsumer` accepts a `queue` parameter — the same class is used by the router, every runbook, and the dashboard's metrics consumer.
+`RabbitMQConsumer` is the read side. Unlike `RabbitMQPublisher` which is hardcoded to the `alerts` queue, `RabbitMQConsumer` accepts a `queue` parameter — the same class is used by the router, every workflow worker, and the dashboard's metrics consumer.
 
 ### Connection
 
 Identical retry logic to `RabbitMQPublisher` (5 attempts, 2-second delays). Additionally sets `prefetch_count=1`, which is a critical configuration detail:
 
-**Prefetch count 1** means RabbitMQ delivers at most one unacknowledged message per consumer at a time. Without this, RabbitMQ would dump all pending messages onto a single consumer as fast as it can read them — even if that consumer is already processing one. For runbooks, which may take seconds per alert, prefetch=1 ensures fair distribution across multiple pod replicas and prevents one slow pod from starving others.
+**Prefetch count 1** means RabbitMQ delivers at most one unacknowledged message per consumer at a time. Without this, RabbitMQ would dump all pending messages onto a single consumer as fast as it can read them — even if that consumer is already processing one. For workflow workers, which block on an N8N round trip per alert, prefetch=1 ensures fair distribution across multiple pod replicas and prevents one slow pod from starving others.
 
 ### Consuming
 
@@ -151,7 +151,7 @@ The callback signature is `Callable[[Alert], None]`. Internally, `consume()` reg
    - If the callback succeeds: `basic_ack`. The message is removed from the queue.
    - If the callback raises: `basic_nack(requeue=False)`. The message is not re-queued, preventing infinite retry loops on systematically broken messages.
 
-**The `requeue=False` choice** is intentional. If the router or runbook raises for a given alert, that same alert will likely continue to raise — re-queuing it would create a busy-loop. Instead, the caller is expected to catch errors internally and route to the DLQ before raising (the router's `_publish_to_dlq` method does exactly this).
+**The `requeue=False` choice** is intentional. If the router or a worker raises for a given alert, that same alert will likely continue to raise — re-queuing it would create a busy-loop. Instead, the caller is expected to catch errors internally and route to the DLQ before raising (the router's `_publish_to_dlq` and the worker's `_to_dlq` do exactly this, using the shared builder in `logpose/queue/dlq.py`).
 
 ### Stopping
 

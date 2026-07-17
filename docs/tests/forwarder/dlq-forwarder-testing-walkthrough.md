@@ -128,8 +128,8 @@ Same flush-per-message behavior as `EnrichedAlertForwarder`. Every DLQ alert is 
 |--------|----------------------|--------------|
 | Input type | `EnrichedAlert` (Pydantic model) | `dict` (raw) |
 | sourcetype | `logpose:enriched_alert` | `logpose:dlq_alert` |
-| Source field | `enriched.runbook` | `message["alert"]["source"]` |
+| Source field | `enriched.workflow` | `message["alert"]["source"]` |
 | Event timestamp | `enriched.enriched_at` | current time (not set explicitly) |
-| Event payload | structured (`alert`, `runbook`, `extracted`) | full raw DLQ dict |
+| Event payload | structured (`alert`, `workflow`, `extracted`) | full raw DLQ dict |
 
 Both forwarders share the same `__new__`-bypass fixture pattern and the same `splunk.send` / `splunk.flush` patching approach. If you understand one, the other is immediately readable.

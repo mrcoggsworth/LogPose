@@ -23,7 +23,7 @@ RabbitMQPublisher.publish(alert)
   alerts queue (durable)
       │
       ▼
-  Router.run()  →  runbook queues
+  Router.run()  →  workflow queues
 ```
 
 Key behaviors:
@@ -34,7 +34,7 @@ Key behaviors:
 - **Context manager** — supports `with RabbitMQPublisher(...) as pub:` which calls `connect()` on enter and `disconnect()` on exit
 - **Publish guard** — `publish()` raises `RuntimeError("not connected")` if called before `connect()`
 
-The publisher is defined in `logpose/queue/rabbitmq.py`. `QUEUE_NAME = "alerts"` is the only queue it knows about — routing to runbook queues is done by the Router, not the publisher.
+The publisher is defined in `logpose/queue/rabbitmq.py`. `QUEUE_NAME = "alerts"` is the only queue it knows about — routing to workflow queues is done by the Router, not the publisher.
 
 ---
 
@@ -200,7 +200,7 @@ You should see five warning log lines (`connection attempt 1/5 failed`, ..., `5/
 |---|---|
 | [`logpose/queue/rabbitmq.py`](../../../logpose/queue/rabbitmq.py) | RabbitMQPublisher implementation — connect, publish, disconnect, retry |
 | [`logpose/models/alert.py`](../../../logpose/models/alert.py) | Alert model — the type published to the `alerts` queue |
-| [`logpose/queue/queues.py`](../../../logpose/queue/queues.py) | Queue name constants — `QUEUE_ALERTS` and all runbook queue names |
-| [`tests/unit/test_rabbitmq.py`](../../unit/test_rabbitmq.py) | Unit tests — all pika calls mocked, no Docker needed |
-| [`tests/integration/conftest.py`](../conftest.py) | `phase2_rabbitmq_channel` fixture used by integration tests that publish alerts |
+| [`logpose/queue/queues.py`](../../../logpose/queue/queues.py) | Queue name constants — `QUEUE_ALERTS` and all workflow queue names |
+| [`tests/unit/test_rabbitmq.py`](../../../tests/unit/test_rabbitmq.py) | Unit tests — all pika calls mocked, no Docker needed |
+| [`tests/integration/conftest.py`](../../../tests/integration/conftest.py) | `phase2_rabbitmq_channel` fixture used by integration tests that publish alerts |
 | [`docker/docker-compose.yml`](../../../docker/docker-compose.yml) | RabbitMQ service definition (port 5672, management UI port 15672) |

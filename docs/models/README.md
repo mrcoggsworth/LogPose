@@ -1,17 +1,18 @@
 # Models
 
-The `logpose.models` package defines the two canonical data structures that flow through the entire LogPose pipeline: `Alert` and `EnrichedAlert`. Every other module in the platform — consumers, the router, runbooks, and forwarders — either creates or reads one of these two objects.
+The `logpose.models` package defines the three canonical data structures that flow through the entire LogPose pipeline: `Alert`, `UdmEvent`, and `EnrichedAlert`. Every other module in the platform — consumers, the router, the UDM mappers, the workflow workers, and forwarders — either creates or reads one of these objects.
 
-Both models are immutable [Pydantic](https://docs.pydantic.dev/) `BaseModel` subclasses. Immutability (`model_config = {"frozen": True}`) is a deliberate design choice: it makes it safe to pass alert objects across threads and async contexts without defensive copies, and it prevents silent mutation bugs where one stage of the pipeline accidentally modifies an object that another stage still holds a reference to.
+All models are immutable [Pydantic](https://docs.pydantic.dev/) `BaseModel` subclasses. Immutability (`model_config = {"frozen": True}`) is a deliberate design choice: it makes it safe to pass alert objects across threads and async contexts without defensive copies, and it prevents silent mutation bugs where one stage of the pipeline accidentally modifies an object that another stage still holds a reference to. Transformations produce new objects via `model_copy(update={...})`.
 
 ---
 
 ## Table of Contents
 
 1. [Alert](#alert)
-2. [EnrichedAlert](#enrichedalert)
-3. [Data Flow Through the Pipeline](#data-flow-through-the-pipeline)
-4. [Serialization](#serialization)
+2. [UdmEvent](#udmevent)
+3. [EnrichedAlert](#enrichedalert)
+4. [Data Flow Through the Pipeline](#data-flow-through-the-pipeline)
+5. [Serialization](#serialization)
 
 ---
 
@@ -28,6 +29,7 @@ class Alert(BaseModel):
     received_at: datetime        # UTC timestamp, auto-set at creation time
     raw_payload: dict[str, Any]  # Verbatim event data from the upstream source
     metadata: dict[str, Any]     # Source-specific transport metadata (topic, offset, etc.)
+    udm: UdmEvent | None         # Normalized UDM view — attached by the Router
 
     model_config = {"frozen": True}
 ```
@@ -38,11 +40,13 @@ class Alert(BaseModel):
 
 **`source`** — A string tag identifying which consumer created this alert. Standard values are `"kafka"`, `"sqs"`, `"pubsub"`, `"splunk_es"`, and `"universal"`. Custom consumers may use any string. The source tag is preserved through the entire pipeline and appears in the final Splunk event.
 
-**`received_at`** — A timezone-aware UTC `datetime` stamped at the moment the consumer created the `Alert` object. This is the ingestion timestamp — distinct from the event timestamp in `raw_payload` (which LogPose does not interpret).
+**`received_at`** — A timezone-aware UTC `datetime` stamped at the moment the consumer created the `Alert` object. This is the ingestion timestamp — distinct from the event timestamp in `raw_payload` (which the UDM mappers parse into `udm.metadata.event_timestamp` where available).
 
-**`raw_payload`** — The verbatim event content from the upstream source, as a Python dict. No transformation is applied at ingestion time. The router's matchers read from this field, and runbooks extract domain-specific fields from it during enrichment. The original payload is always preserved — no field is removed or overwritten.
+**`raw_payload`** — The verbatim event content from the upstream source, as a Python dict. No transformation is applied at ingestion time. The router's matchers read from this field, and the UDM mappers build the normalized view from it. The original payload is always preserved — no field is removed or overwritten.
 
-**`metadata`** — Transport-level context that varies by source: Kafka offsets and topic, SQS message IDs, Pub/Sub publish times, etc. This is useful for debugging and replay scenarios but is not read by the router or runbooks. See the [Consumers documentation](../consumers/README.md) for which metadata each consumer attaches.
+**`metadata`** — Transport-level context that varies by source: Kafka offsets and topic, SQS message IDs, Pub/Sub publish times, etc. This is useful for debugging and replay scenarios but is not read by the router or workflows. See the [Consumers documentation](../consumers/README.md) for which metadata each consumer attaches.
+
+**`udm`** — The Chronicle-style normalized view of the event. Consumers always create alerts with `udm=None`; the **Router** attaches the UDM section after route matching (the matched route selects which mapper runs). Every alert leaving the router — including DLQ'd alerts, which get the generic mapping — carries a UDM view.
 
 ### Example
 
@@ -66,8 +70,47 @@ alert = Alert(
 )
 
 print(alert.id)       # "3f2ea9bc-..."  (auto-generated)
-print(alert.source)   # "kafka"
+print(alert.udm)      # None — the Router attaches this after matching
 ```
+
+---
+
+## UdmEvent
+
+**File:** `logpose/models/udm.py`
+
+`UdmEvent` is a pragmatic subset of [Google Chronicle's Unified Data Model](https://cloud.google.com/chronicle/docs/event-processing/udm-overview). It gives every alert a consistent, vendor-neutral shape that N8N workflows and Splunk searches can rely on, regardless of which source produced the raw event.
+
+```python
+class UdmEvent(BaseModel):
+    metadata: UdmMetadata                     # what happened, when, from which product
+    principal: UdmNoun | None                 # the actor
+    target: UdmNoun | None                    # what was acted upon
+    src: UdmNoun | None                       # where the action came from
+    observer: UdmNoun | None                  # a passive observer (sensor, proxy)
+    about: list[UdmNoun]                      # other entities referenced
+    network: UdmNetwork | None                # protocol / HTTP details
+    security_result: list[UdmSecurityResult]  # verdicts from security products
+    additional: dict[str, str]                # escape hatch for unmapped fields
+```
+
+### Sections
+
+**`metadata`** (`UdmMetadata`) — `event_type` (enum, see below), `event_timestamp` (parsed from the source event), `ingested_timestamp` (LogPose receipt time), `vendor_name`, `product_name` (e.g. `"AWS CloudTrail"`), `product_event_type` (the vendor-native name, e.g. `"PutObject"`), `product_log_id`, and `description`.
+
+**Nouns** (`principal` / `target` / `src` / `observer` / `about`) — Chronicle's term for the entities involved in an event. All five use the same `UdmNoun` shape: `user` (`UdmUser`: `userid`, `user_display_name`, `email_addresses`), `hostname`, `ip` (list), `port`, `application`, `resource` (`UdmResource`: `name`, `resource_type`), `cloud` (`UdmCloud`: `environment`, `account_id`, `project_id`, `region`), and `labels`.
+
+**`security_result`** (`UdmSecurityResult`) — classifications made by a security product: `severity` (`INFORMATIONAL` → `CRITICAL`), `summary`, `category_details`, `rule_name` (e.g. a GuardDuty finding type), and `action` (e.g. `"BLOCK"`).
+
+**`network`** (`UdmNetwork`) — `application_protocol`, `http_method`, `http_response_code`.
+
+### Event types
+
+`metadata.event_type` uses Chronicle's enum values. LogPose currently maps: `GENERIC_EVENT` (fallback), `USER_LOGIN`, `USER_LOGOUT`, `USER_RESOURCE_ACCESS`, `RESOURCE_CREATION`, `RESOURCE_DELETION`, `RESOURCE_READ`, `RESOURCE_PERMISSIONS_CHANGE`, `NETWORK_CONNECTION`, `SCAN_UNCATEGORIZED`, `SERVICE_UNSPECIFIED`. Use the most specific type that applies; extend the enum as new mappers need it, but never rename existing values — N8N workflows depend on them.
+
+### Mappers
+
+Each route has a mapper in `logpose/udm/mappers/` (`(alert: Alert) -> UdmEvent`), registered in `logpose/udm/normalize.py`. The `normalize_alert()` dispatcher **never raises**: a mapper failure falls back to the generic `GENERIC_EVENT` mapping, so normalization can never block routing. Identity extraction (CloudTrail `userIdentity`, GCP `authenticationInfo`, AD events) lives in `logpose/udm/identity.py` and feeds `principal.user`.
 
 ---
 
@@ -75,15 +118,15 @@ print(alert.source)   # "kafka"
 
 **File:** `logpose/models/enriched_alert.py`
 
-`EnrichedAlert` is the output of a runbook. It wraps the original `Alert` unchanged and adds the results of enrichment: extracted domain fields, an optional error string if something went wrong, and a destination routing tag.
+`EnrichedAlert` is produced by a **workflow worker** from its N8N workflow's HTTP response. It wraps the original `Alert` (including its UDM section) and adds the results of enrichment: extracted domain fields, an optional error string, and a destination routing tag.
 
 ```python
 class EnrichedAlert(BaseModel):
-    alert: Alert                       # The original alert, unchanged
-    runbook: str                       # Dot-separated runbook name, e.g. "cloud.aws.cloudtrail"
-    enriched_at: datetime              # UTC timestamp stamped by the runbook
-    extracted: dict[str, Any]          # Fields the runbook extracted from raw_payload
-    runbook_error: str | None          # Set when enrich() catches an exception
+    alert: Alert                       # The original alert (workflow may replace alert.udm)
+    workflow: str                      # Dot-separated route/workflow name, e.g. "cloud.aws.cloudtrail"
+    enriched_at: datetime              # UTC timestamp stamped by the worker
+    extracted: dict[str, Any]          # Fields the N8N workflow returned
+    workflow_error: str | None         # Set when the workflow reports a handled error
     destination: Literal["splunk", "universal"]  # Controls which forwarder client is used
 
     model_config = {"frozen": True}
@@ -91,23 +134,17 @@ class EnrichedAlert(BaseModel):
 
 ### Fields
 
-**`alert`** — The original `Alert` object, embedded verbatim. Nothing in the pipeline modifies the original alert — runbooks produce a new `EnrichedAlert` rather than mutating in place.
+**`alert`** — The original `Alert` object. The only permitted change relative to what the router published is the `udm` section: when the N8N response includes a valid `udm` object, the worker replaces the router's UDM view with the workflow's richer version (via `model_copy`, producing a new frozen object).
 
-**`runbook`** — The dot-separated logical name of the runbook that processed this alert, e.g. `"cloud.aws.cloudtrail"` or `"cloud.gcp.event_audit"`. This appears in Splunk as the `source` field of the HEC event.
+**`workflow`** — The dot-separated route name of the worker that processed this alert, e.g. `"cloud.aws.cloudtrail"`. This appears in Splunk as the `source` field of the HEC event.
 
-**`enriched_at`** — A timezone-aware UTC `datetime` stamped when the runbook created the `EnrichedAlert`. Combined with `alert.received_at`, this lets operators compute end-to-end enrichment latency.
+**`enriched_at`** — A timezone-aware UTC `datetime` stamped when the worker created the `EnrichedAlert`. Combined with `alert.received_at`, this lets operators compute end-to-end enrichment latency (including the N8N round trip).
 
-**`extracted`** — A free-form dict of fields the runbook extracted from `alert.raw_payload`. The schema varies by runbook:
+**`extracted`** — The workflow's enrichment output. If the N8N response contains an `extracted` key, that dict is used; otherwise the entire response object (minus `udm` / `destination`) is treated as extracted, so trivial workflows work with zero ceremony.
 
-| Runbook | Keys in `extracted` |
-|---------|---------------------|
-| `cloud.aws.cloudtrail` | `user`, `user_type`, `event_name`, `event_source`, `aws_region`, `source_ip`, `cloudtrail` (enricher results), `principal` (enricher), `enricher_errors` |
-| `cloud.gcp.event_audit` | `project_id`, `method_name`, `service_name`, `principal_email` |
-| `test` | Mirror of `alert.raw_payload` |
+**`workflow_error`** — Populated from the response's optional `error` field, for workflows that handled a failure internally but still returned a (partial) result. The `EnrichedAlert` is still forwarded to Splunk so partial enrichments are visible rather than silently dropped. Note the distinction: an error *reported by* the workflow lands here; a failed *invocation* (timeout, 5xx after retries, 4xx, non-JSON body) never produces an `EnrichedAlert` at all — the alert goes to `alerts.dlq` with `dlq_reason="workflow_failed"` or `"workflow_bad_response"`.
 
-**`runbook_error`** — If `enrich()` raises an unhandled exception (the last-line defense in `BaseRunbook._handle_alert`), this field is set to a string describing the error. A non-`None` value means enrichment was partial or failed entirely. The `EnrichedAlert` is still forwarded to Splunk so that failed alerts are visible rather than silently dropped. Operators can search Splunk for `runbook_error IS NOT NULL` to find all partially-enriched alerts.
-
-**`destination`** — Selects which client the `EnrichedAlertForwarder` uses. The default is `"splunk"`, which routes to `SplunkHECClient`. Set to `"universal"` on a runbook class to route to `UniversalHTTPClient` instead. The destination is a per-runbook-class decision — it is set as a class attribute on the runbook, not per-alert.
+**`destination`** — Selects which client the `EnrichedAlertForwarder` uses. The default is `"splunk"` (`SplunkHECClient`); a workflow can return `"universal"` to route to `UniversalHTTPClient` instead. Unknown values are ignored and fall back to `"splunk"`.
 
 ---
 
@@ -115,7 +152,7 @@ class EnrichedAlert(BaseModel):
 
 ```
 Consumer
-  └─ creates Alert(source, raw_payload, metadata)
+  └─ creates Alert(source, raw_payload, metadata, udm=None)
        │
        ▼
   alerts queue (RabbitMQ, durable)
@@ -124,16 +161,18 @@ Consumer
   Router
   └─ reads alert.raw_payload
   └─ matches to a route
-  └─ publishes unchanged Alert to runbook queue
+  └─ attaches UDM: alert.model_copy(update={"udm": normalize_alert(alert, route.name)})
+  └─ publishes the UDM-shaped Alert to the route's workflow queue
        │
        ▼
-  runbook.cloudtrail queue (or other runbook queue)
+  workflow.cloudtrail queue (or other workflow queue)
        │
        ▼
-  Runbook
-  └─ reads alert.raw_payload
-  └─ produces EnrichedAlert(alert=alert, extracted={...})
+  WorkflowWorker (one pod per route)
+  └─ POSTs the full Alert JSON to the route's N8N webhook
+  └─ builds EnrichedAlert from the workflow's JSON response
   └─ publishes EnrichedAlert to enriched queue
+  └─ on invocation failure: publishes the alert to alerts.dlq instead
        │
        ▼
   enriched queue (RabbitMQ, durable)
@@ -141,17 +180,17 @@ Consumer
        ▼
   EnrichedAlertForwarder
   └─ reads EnrichedAlert
-  └─ calls SplunkHECClient.send(event)
+  └─ calls SplunkHECClient.send(event)  (or UniversalHTTPClient)
   └─ Splunk indexes the event
 ```
 
-The `Alert` object is passed through unchanged from consumer to router to runbook. The `EnrichedAlert` is born in the runbook and consumed by the forwarder. Neither is mutated at any stage — every transformation produces a new object.
+The `Alert` is created by the consumer, gains its UDM view in the router, and is otherwise passed through unchanged. The `EnrichedAlert` is born in the workflow worker and consumed by the forwarder. Nothing is mutated at any stage — every transformation produces a new object.
 
 ---
 
 ## Serialization
 
-Both models use Pydantic's `model_dump_json()` / `model_validate_json()` for wire serialization. This is how they traverse RabbitMQ queues:
+All models use Pydantic's `model_dump_json()` / `model_validate_json()` for wire serialization. This is how they traverse RabbitMQ queues *and* how alerts are sent to N8N webhooks:
 
 **Publishing an Alert:**
 ```python
@@ -164,26 +203,10 @@ channel.basic_publish(..., body=body)
 alert = Alert.model_validate_json(body)          # body is bytes or str
 ```
 
-Pydantic handles `datetime` serialization to ISO 8601 strings and deserialization back to `datetime` objects with timezone information preserved. The `frozen=True` config means Pydantic rejects any attempt to assign to a field after construction, both in Python code and through `__setattr__`.
-
-### Producing a partial EnrichedAlert on error
-
-Runbooks follow this pattern to ensure enrichment errors surface in Splunk rather than disappearing:
-
+**Validating a workflow's UDM response:**
 ```python
-def enrich(self, alert: Alert) -> EnrichedAlert:
-    extracted: dict = {}
-    error: str | None = None
-    try:
-        extracted = self._do_enrichment(alert)
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-    return EnrichedAlert(
-        alert=alert,
-        runbook=self.runbook_name,
-        extracted=extracted,
-        runbook_error=error,
-    )
+udm = UdmEvent.model_validate(response["udm"])   # raises on invalid shape
+alert = alert.model_copy(update={"udm": udm})
 ```
 
-This guarantees `enrich()` never raises — it always returns an `EnrichedAlert`, even when extraction fails. `BaseRunbook._handle_alert` has a second catch as a safety net, but runbooks should not rely on it.
+Pydantic handles `datetime` serialization to ISO 8601 strings and deserialization back to `datetime` objects with timezone information preserved. Enum fields (`event_type`, `severity`) serialize as their string values. The `frozen=True` config means Pydantic rejects any attempt to assign to a field after construction, both in Python code and through `__setattr__`.
