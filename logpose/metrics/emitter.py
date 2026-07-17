@@ -28,14 +28,12 @@ class MetricsEmitter:
         alert_ingested   — consumer received an alert (data: {source})
         route_matched    — router matched a route (data: {route})
         dlq_enqueued     — alert sent to DLQ (data: {reason})
-        runbook_success  — runbook enriched successfully (data: {runbook})
-        runbook_error    — runbook raised unexpectedly (data: {runbook, error})
+        workflow_success — N8N workflow enriched successfully (data: {workflow})
+        workflow_error   — N8N workflow invocation failed (data: {workflow, reason})
     """
 
     def __init__(self, url: str | None = None) -> None:
-        self._url = url or os.environ.get(
-            "RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"
-        )
+        self._url = url or os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
         self._connection: pika.BlockingConnection | None = None
         self._channel: pika.adapters.blocking_connection.BlockingChannel | None = None
 

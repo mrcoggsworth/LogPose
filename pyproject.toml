@@ -35,6 +35,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "integration: requires the docker compose stack (RabbitMQ, emulators)",
+]
 
 [tool.mypy]
 python_version = "3.10"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from logpose.queue.queues import QUEUE_RUNBOOK_CLOUDTRAIL
+from logpose.queue.queues import QUEUE_WORKFLOW_CLOUDTRAIL
 from logpose.routing.registry import Route, registry
 
 
@@ -25,7 +25,7 @@ def matches(raw_payload: dict[str, Any]) -> bool:
 registry.register(
     Route(
         name="cloud.aws.cloudtrail",
-        queue=QUEUE_RUNBOOK_CLOUDTRAIL,
+        queue=QUEUE_WORKFLOW_CLOUDTRAIL,
         matcher=matches,
         description="AWS CloudTrail API activity and console login events",
     )

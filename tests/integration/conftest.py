@@ -7,6 +7,7 @@ All integration tests are marked with @pytest.mark.integration so they can be
 run separately from unit tests:
   pytest tests/integration/ -v -m integration
 """
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,7 @@ from google.cloud import pubsub_v1
 # LocalStack accepts any credentials; boto3 raises NoCredentialsError if none
 # are present in the environment (no ~/.aws/credentials, no IAM role).
 # AWS_DEFAULT_REGION must also be set so boto3 clients constructed without an
-# explicit region (e.g. CloudTrailRunbook.__init__) don't raise NoRegionError.
+# explicit region don't raise NoRegionError.
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -38,12 +39,8 @@ KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPICS", "security-alerts")
 AWS_ENDPOINT = os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-SNS_TOPIC_ARN = os.getenv(
-    "SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:security-alerts"
-)
-SQS_QUEUE_URL = os.getenv(
-    "SQS_QUEUE_URL", "http://localhost:4566/000000000000/logpose-alerts"
-)
+SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:security-alerts")
+SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL", "http://localhost:4566/000000000000/logpose-alerts")
 PUBSUB_PROJECT = os.getenv("PUBSUB_PROJECT_ID", "logpose-dev")
 PUBSUB_TOPIC = "security-alerts"
 PUBSUB_SUBSCRIPTION = os.getenv("PUBSUB_SUBSCRIPTION_ID", "security-alerts-sub")
@@ -63,14 +60,13 @@ def _wait_for(fn, description: str, timeout: int = _WAIT_TIMEOUT) -> None:
         except Exception as exc:
             last_exc = exc
             time.sleep(1)
-    raise RuntimeError(
-        f"Timed out waiting for {description} after {timeout}s: {last_exc}"
-    )
+    raise RuntimeError(f"Timed out waiting for {description} after {timeout}s: {last_exc}")
 
 
 # ---------------------------------------------------------------------------
 # RabbitMQ helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def rabbitmq_connection() -> Generator[pika.BlockingConnection, None, None]:
@@ -101,7 +97,7 @@ def drain_rabbitmq_queue(channel, queue: str = "alerts") -> list[dict]:
 # Phase II — routing fixtures
 # ---------------------------------------------------------------------------
 
-from logpose.queue.queues import ALL_RUNBOOK_QUEUES, QUEUE_DLQ, QUEUE_ENRICHED  # noqa: E402
+from logpose.queue.queues import ALL_WORKFLOW_QUEUES, QUEUE_DLQ, QUEUE_ENRICHED  # noqa: E402
 
 
 @pytest.fixture()
@@ -112,7 +108,7 @@ def phase2_rabbitmq_channel(rabbitmq_connection: pika.BlockingConnection):
     own channel fixtures and are unaffected by this one.
     """
     channel = rabbitmq_connection.channel()
-    for queue in (*ALL_RUNBOOK_QUEUES, QUEUE_DLQ, QUEUE_ENRICHED):
+    for queue in (*ALL_WORKFLOW_QUEUES, QUEUE_DLQ, QUEUE_ENRICHED):
         channel.queue_declare(queue=queue, durable=True)
     yield channel
     channel.close()
@@ -131,6 +127,7 @@ def purge_queues(channel, *queue_names: str) -> None:
 # Kafka helpers
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def kafka_producer() -> Generator[Producer, None, None]:
     def try_produce() -> None:
@@ -146,6 +143,7 @@ def kafka_producer() -> Generator[Producer, None, None]:
 # ---------------------------------------------------------------------------
 # LocalStack (SNS + SQS) helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def localstack_clients():
@@ -175,9 +173,7 @@ def localstack_clients():
         pass
     # Subscribe SQS to SNS
     try:
-        queue_attrs = sqs.get_queue_attributes(
-            QueueUrl=SQS_QUEUE_URL, AttributeNames=["QueueArn"]
-        )
+        queue_attrs = sqs.get_queue_attributes(QueueUrl=SQS_QUEUE_URL, AttributeNames=["QueueArn"])
         sns.subscribe(
             TopicArn=SNS_TOPIC_ARN,
             Protocol="sqs",
@@ -193,14 +189,13 @@ def localstack_clients():
 # GCP Pub/Sub emulator helpers
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def pubsub_clients():
     os.environ["PUBSUB_EMULATOR_HOST"] = PUBSUB_EMULATOR
 
     def try_connect() -> None:
-        pubsub_v1.PublisherClient().list_topics(
-            request={"project": f"projects/{PUBSUB_PROJECT}"}
-        )
+        pubsub_v1.PublisherClient().list_topics(request={"project": f"projects/{PUBSUB_PROJECT}"})
 
     _wait_for(try_connect, "Pub/Sub emulator")
 
@@ -214,9 +209,7 @@ def pubsub_clients():
     except Exception:
         pass
     try:
-        subscriber.create_subscription(
-            request={"name": subscription_path, "topic": topic_path}
-        )
+        subscriber.create_subscription(request={"name": subscription_path, "topic": topic_path})
     except Exception:
         pass
 

@@ -14,14 +14,14 @@ from logpose.models.enriched_alert import EnrichedAlert
 
 
 def _make_enriched(
-    runbook: str = "cloud.aws.cloudtrail",
+    workflow: str = "cloud.aws.cloudtrail",
     extracted: dict | None = None,
     destination: str = "splunk",
 ) -> EnrichedAlert:
     alert = Alert(source="sqs", raw_payload={"eventName": "ConsoleLogin"})
     return EnrichedAlert(
         alert=alert,
-        runbook=runbook,
+        workflow=workflow,
         extracted=extracted or {"user": "alice", "event_name": "ConsoleLogin"},
         destination=destination,  # type: ignore[arg-type]
     )
@@ -85,7 +85,7 @@ def test_forward_sets_enriched_alert_sourcetype(
         assert event["sourcetype"] == "logpose:enriched_alert"
 
 
-def test_forward_uses_runbook_as_splunk_source(
+def test_forward_uses_workflow_as_splunk_source(
     forwarder: EnrichedAlertForwarder, splunk: SplunkHECClient
 ) -> None:
     enriched = _make_enriched("cloud.aws.cloudtrail")
@@ -95,13 +95,13 @@ def test_forward_uses_runbook_as_splunk_source(
         assert event["source"] == "cloud.aws.cloudtrail"
 
 
-def test_forward_falls_back_to_alert_source_when_runbook_empty(
+def test_forward_falls_back_to_alert_source_when_workflow_empty(
     forwarder: EnrichedAlertForwarder, splunk: SplunkHECClient
 ) -> None:
-    # EnrichedAlert.runbook is required and non-empty in practice,
+    # EnrichedAlert.workflow is required and non-empty in practice,
     # but the forwarder should still handle an empty string gracefully.
     alert = Alert(source="kafka", raw_payload={})
-    enriched = EnrichedAlert(alert=alert, runbook="", extracted={})
+    enriched = EnrichedAlert(alert=alert, workflow="", extracted={})
     with patch.object(splunk, "send") as mock_send, patch.object(splunk, "flush"):
         forwarder._forward(enriched)
         event = mock_send.call_args[0][0]

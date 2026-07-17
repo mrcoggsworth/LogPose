@@ -12,20 +12,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from logpose.dashboard.metrics_consumer import MetricsConsumer
 from logpose.dashboard.metrics_store import MetricsStore
 from logpose.dashboard.rabbitmq_api import RabbitMQApiClient
-from logpose.dashboard.routes_reader import get_routes, get_runbooks
+from logpose.dashboard.routes_reader import get_routes, get_workflows
 
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
 # Module-level singletons — created once at import, shared across requests
-_store = MetricsStore(
-    db_path=os.environ.get("METRICS_DB_PATH", "/tmp/logpose_metrics.db")
-)
+_store = MetricsStore(db_path=os.environ.get("METRICS_DB_PATH", "/tmp/logpose_metrics.db"))
 _consumer = MetricsConsumer(store=_store)
-_rmq_api = RabbitMQApiClient(
-    base_url=os.environ.get("RABBITMQ_MGMT_URL", "http://localhost:15672")
-)
+_rmq_api = RabbitMQApiClient(base_url=os.environ.get("RABBITMQ_MGMT_URL", "http://localhost:15672"))
 
 
 @asynccontextmanager
@@ -81,10 +77,10 @@ def api_routes() -> list[dict[str, Any]]:
     return get_routes()
 
 
-@app.get("/api/runbooks")
-def api_runbooks() -> list[dict[str, Any]]:
-    """Discovered runbooks from the runbooks package (read-only reference)."""
-    return get_runbooks()
+@app.get("/api/workflows")
+def api_workflows() -> list[dict[str, Any]]:
+    """N8N workflow workers, one per registered route (read-only reference)."""
+    return get_workflows()
 
 
 @app.get("/api/overview")
@@ -94,20 +90,14 @@ def api_overview() -> dict[str, Any]:
     queues = _rmq_api.get_queues()
 
     total_ingested: int = sum(snap["alert_ingested"].values())
-    total_processed: int = sum(snap["runbook_success"].values())
-    total_errors: int = sum(snap["runbook_error"].values())
+    total_processed: int = sum(snap["workflow_success"].values())
+    total_errors: int = sum(snap["workflow_error"].values())
 
     # Prefer live queue depth for DLQ; fall back to counter sum
-    dlq_queue = next(
-        (q for q in queues if q["name"] == "alerts.dlq"), None
-    )
-    dlq_count: int = (
-        int(dlq_queue["messages"]) if dlq_queue else sum(snap["dlq_counts"].values())
-    )
+    dlq_queue = next((q for q in queues if q["name"] == "alerts.dlq"), None)
+    dlq_count: int = int(dlq_queue["messages"]) if dlq_queue else sum(snap["dlq_counts"].values())
 
-    metrics_queue = next(
-        (q for q in queues if q["name"] == "logpose.metrics"), None
-    )
+    metrics_queue = next((q for q in queues if q["name"] == "logpose.metrics"), None)
 
     return {
         "total_ingested": total_ingested,

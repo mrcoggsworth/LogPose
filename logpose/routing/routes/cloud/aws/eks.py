@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from logpose.queue.queues import QUEUE_RUNBOOK_EKS
+from logpose.queue.queues import QUEUE_WORKFLOW_EKS
 from logpose.routing.registry import Route, registry
 
 
@@ -19,7 +19,7 @@ def matches(raw_payload: dict[str, Any]) -> bool:
 registry.register(
     Route(
         name="cloud.aws.eks",
-        queue=QUEUE_RUNBOOK_EKS,
+        queue=QUEUE_WORKFLOW_EKS,
         matcher=matches,
         description="AWS EKS Kubernetes audit log events",
     )

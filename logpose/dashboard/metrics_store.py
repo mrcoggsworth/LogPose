@@ -17,7 +17,7 @@ _SNAPSHOT_INTERVAL_SECONDS = 60
 class MetricsStore:
     """Thread-safe in-memory counter store with SQLite persistence.
 
-    Counters are keyed by string (route name, runbook name, source, etc.)
+    Counters are keyed by string (route name, workflow name, source, etc.)
     and incremented atomically via a threading.Lock.
 
     On startup the store loads its last snapshot from SQLite so counters
@@ -33,8 +33,8 @@ class MetricsStore:
 
         # Counter buckets
         self.route_counts: dict[str, int] = {}
-        self.runbook_success: dict[str, int] = {}
-        self.runbook_error: dict[str, int] = {}
+        self.workflow_success: dict[str, int] = {}
+        self.workflow_error: dict[str, int] = {}
         self.alert_ingested: dict[str, int] = {}
         self.dlq_counts: dict[str, int] = {}
 
@@ -58,8 +58,8 @@ class MetricsStore:
         with self._lock:
             return {
                 "route_counts": dict(self.route_counts),
-                "runbook_success": dict(self.runbook_success),
-                "runbook_error": dict(self.runbook_error),
+                "workflow_success": dict(self.workflow_success),
+                "workflow_error": dict(self.workflow_error),
                 "alert_ingested": dict(self.alert_ingested),
                 "dlq_counts": dict(self.dlq_counts),
             }
@@ -75,7 +75,9 @@ class MetricsStore:
             name="metrics-snapshot",
         )
         self._snapshot_thread.start()
-        logger.info("MetricsStore snapshot thread started (interval=%ds)", _SNAPSHOT_INTERVAL_SECONDS)
+        logger.info(
+            "MetricsStore snapshot thread started (interval=%ds)", _SNAPSHOT_INTERVAL_SECONDS
+        )
 
     def stop(self) -> None:
         """Signal the snapshot thread to stop and do a final flush."""
@@ -89,15 +91,13 @@ class MetricsStore:
     def _init_db(self) -> None:
         try:
             with sqlite3.connect(self._db_path) as conn:
-                conn.execute(
-                    """
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS logpose_metrics (
                         key   TEXT PRIMARY KEY,
                         value INTEGER NOT NULL DEFAULT 0,
                         updated_at TEXT
                     )
-                    """
-                )
+                    """)
                 conn.commit()
         except Exception as exc:
             logger.warning("MetricsStore: could not initialise SQLite (%s): %s", self._db_path, exc)
@@ -145,8 +145,8 @@ class MetricsStore:
     def _bucket_by_name(self, name: str) -> dict[str, int] | None:
         mapping: dict[str, dict[str, int]] = {
             "route_counts": self.route_counts,
-            "runbook_success": self.runbook_success,
-            "runbook_error": self.runbook_error,
+            "workflow_success": self.workflow_success,
+            "workflow_error": self.workflow_error,
             "alert_ingested": self.alert_ingested,
             "dlq_counts": self.dlq_counts,
         }

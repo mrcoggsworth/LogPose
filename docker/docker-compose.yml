@@ -225,7 +225,28 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
-  # LogPose: router  (Phase II — routes alerts to runbook queues)
+  # N8N workflow mock  (stands in for a real N8N instance)
+  # ==========================================================================
+
+  n8n-mock:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-n8n-mock
+    command: ["python", "/scripts/n8n_workflow_mock.py"]
+    volumes:
+      - ./n8n_workflow_mock.py:/scripts/n8n_workflow_mock.py:ro
+    ports:
+      - "5678:5678"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5678/health',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # LogPose: router  (Phase II — routes alerts to workflow queues)
   # ==========================================================================
 
   logpose-router:
@@ -242,52 +263,57 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
-  # LogPose: runbooks  (Phase II — enrichment pods)
+  # LogPose: workflow workers  (Phase II — one pod per route, N8N enrichment)
   # ==========================================================================
 
-  logpose-cloudtrail-runbook:
+  logpose-cloudtrail-worker:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: logpose-cloudtrail-runbook
-    command: ["python", "-m", "logpose.runbooks.cloud.aws"]
+    container_name: logpose-cloudtrail-worker
+    command: ["python", "-m", "logpose.workflows.worker_main"]
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      AWS_DEFAULT_REGION: us-east-1
-      # Uncomment to point enrichers at LocalStack (community edition supports
-      # cloudtrail, s3, iam, ec2 in limited form):
-      # AWS_ENDPOINT_URL: http://localstack:4566
+      LOGPOSE_ROUTE: cloud.aws.cloudtrail
+      N8N_WEBHOOK_URL: http://n8n-mock:5678/webhook/cloudtrail
     depends_on:
       rabbitmq:
         condition: service_healthy
-    restart: unless-stopped
-
-  logpose-gcp-runbook:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    container_name: logpose-gcp-runbook
-    command: ["python", "-m", "logpose.runbooks.cloud.gcp"]
-    environment:
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
-    depends_on:
-      rabbitmq:
+      n8n-mock:
         condition: service_healthy
     restart: unless-stopped
 
-  logpose-test-runbook:
+  logpose-gcp-worker:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: logpose-test-runbook
-    command: ["python", "-m", "logpose.runbooks.test_runbook"]
+    container_name: logpose-gcp-worker
+    command: ["python", "-m", "logpose.workflows.worker_main"]
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      LOGPOSE_ROUTE: cloud.gcp.event_audit
+      N8N_WEBHOOK_URL: http://n8n-mock:5678/webhook/gcp-event-audit
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      n8n-mock:
+        condition: service_healthy
+    restart: unless-stopped
+
+  logpose-test-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: logpose-test-worker
+    command: ["python", "-m", "logpose.workflows.worker_main"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      LOGPOSE_ROUTE: test
+      N8N_WEBHOOK_URL: http://n8n-mock:5678/webhook/test
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      n8n-mock:
         condition: service_healthy
     restart: unless-stopped
 

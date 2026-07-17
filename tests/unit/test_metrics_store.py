@@ -26,14 +26,14 @@ def test_increment_single_bucket(store: MetricsStore) -> None:
 
 def test_increment_all_buckets(store: MetricsStore) -> None:
     store.increment(store.route_counts, "r1")
-    store.increment(store.runbook_success, "rb1")
-    store.increment(store.runbook_error, "rb1")
+    store.increment(store.workflow_success, "wf1")
+    store.increment(store.workflow_error, "wf1")
     store.increment(store.alert_ingested, "kafka")
     store.increment(store.dlq_counts, "no_route_matched")
     snap = store.snapshot()
     assert snap["route_counts"]["r1"] == 1
-    assert snap["runbook_success"]["rb1"] == 1
-    assert snap["runbook_error"]["rb1"] == 1
+    assert snap["workflow_success"]["wf1"] == 1
+    assert snap["workflow_error"]["wf1"] == 1
     assert snap["alert_ingested"]["kafka"] == 1
     assert snap["dlq_counts"]["no_route_matched"] == 1
 
@@ -48,8 +48,7 @@ def test_snapshot_is_independent_copy(store: MetricsStore) -> None:
 def test_increment_thread_safety(store: MetricsStore) -> None:
     n = 200
     threads = [
-        threading.Thread(target=lambda: store.increment(store.route_counts, "r1"))
-        for _ in range(n)
+        threading.Thread(target=lambda: store.increment(store.route_counts, "r1")) for _ in range(n)
     ]
     for t in threads:
         t.start()
@@ -59,14 +58,15 @@ def test_increment_thread_safety(store: MetricsStore) -> None:
 
 
 def test_increment_custom_amount(store: MetricsStore) -> None:
-    store.increment(store.runbook_success, "test", 10)
-    store.increment(store.runbook_success, "test", 5)
-    assert store.snapshot()["runbook_success"]["test"] == 15
+    store.increment(store.workflow_success, "test", 10)
+    store.increment(store.workflow_success, "test", 5)
+    assert store.snapshot()["workflow_success"]["test"] == 15
 
 
 def test_sqlite_round_trip() -> None:
     """Counters written by one store are readable by a second store on the same path."""
     import tempfile, os
+
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         path = f.name
     try:

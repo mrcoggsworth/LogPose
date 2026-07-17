@@ -28,9 +28,7 @@ class MetricsConsumer:
 
     def __init__(self, store: MetricsStore, url: str | None = None) -> None:
         self._store = store
-        self._url = url or os.environ.get(
-            "RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"
-        )
+        self._url = url or os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
         self._thread: threading.Thread | None = None
         self._running = False
 
@@ -104,13 +102,13 @@ class MetricsConsumer:
                 reason: str = str(data.get("reason", "unknown"))
                 self._store.increment(self._store.dlq_counts, reason)
 
-            elif event == "runbook_success":
-                runbook: str = str(data.get("runbook", "unknown"))
-                self._store.increment(self._store.runbook_success, runbook)
+            elif event == "workflow_success":
+                workflow: str = str(data.get("workflow", "unknown"))
+                self._store.increment(self._store.workflow_success, workflow)
 
-            elif event == "runbook_error":
-                rb: str = str(data.get("runbook", "unknown"))
-                self._store.increment(self._store.runbook_error, rb)
+            elif event == "workflow_error":
+                wf: str = str(data.get("workflow", "unknown"))
+                self._store.increment(self._store.workflow_error, wf)
 
             else:
                 logger.debug("MetricsConsumer: unknown event type '%s'", event)

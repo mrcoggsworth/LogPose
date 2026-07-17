@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from logpose.models.alert import Alert
-from logpose.queue.queues import QUEUE_DLQ, QUEUE_RUNBOOK_CLOUDTRAIL
+from logpose.queue.queues import QUEUE_DLQ, QUEUE_WORKFLOW_CLOUDTRAIL
 from logpose.routing.registry import Route, RouteRegistry
 from logpose.routing.router import Router
 
@@ -47,7 +47,7 @@ def registry_with_cloudtrail() -> RouteRegistry:
     reg.register(
         Route(
             name="cloud.aws.cloudtrail",
-            queue=QUEUE_RUNBOOK_CLOUDTRAIL,
+            queue=QUEUE_WORKFLOW_CLOUDTRAIL,
             matcher=lambda p: "eventSource" in p,
         )
     )
@@ -78,7 +78,7 @@ def test_router_publishes_to_matched_queue(
 
     mock_publisher.publish_to_queue.assert_called_once()
     call_args = mock_publisher.publish_to_queue.call_args
-    assert call_args.args[0] == QUEUE_RUNBOOK_CLOUDTRAIL
+    assert call_args.args[0] == QUEUE_WORKFLOW_CLOUDTRAIL
 
 
 def test_router_publishes_to_dlq_on_no_match(
@@ -132,6 +132,54 @@ def test_router_dlq_payload_preserves_full_alert(
     assert payload["alert"]["raw_payload"]["severity"] == "CRITICAL"
 
 
+def test_router_attaches_udm_to_routed_alert(
+    mock_publisher: MagicMock,
+    mock_consumer: MagicMock,
+    registry_with_cloudtrail: RouteRegistry,
+) -> None:
+    """The published alert must carry a UDM section chosen by route name."""
+    router = _make_router(registry_with_cloudtrail, mock_publisher, mock_consumer)
+    alert = _make_alert(
+        eventSource="s3.amazonaws.com",
+        eventVersion="1.08",
+        eventName="PutObject",
+        userIdentity={
+            "type": "IAMUser",
+            "arn": "arn:aws:iam::123456789012:user/alice",
+            "userName": "alice",
+            "accountId": "123456789012",
+        },
+    )
+
+    router._route_alert(alert)
+
+    body = mock_publisher.publish_to_queue.call_args.args[1]
+    published = json.loads(body)
+    assert published["udm"] is not None
+    assert published["udm"]["metadata"]["event_type"] == "RESOURCE_CREATION"
+    assert (
+        published["udm"]["principal"]["user"]["userid"]
+        == "arn:aws:iam::123456789012:user/alice"
+    )
+    # Raw payload is preserved untouched alongside the UDM view.
+    assert published["raw_payload"]["eventName"] == "PutObject"
+
+
+def test_router_attaches_generic_udm_on_dlq(
+    mock_publisher: MagicMock,
+    mock_consumer: MagicMock,
+) -> None:
+    """Unrouted alerts still get the generic UDM mapping before the DLQ."""
+    reg = RouteRegistry()
+    router = _make_router(reg, mock_publisher, mock_consumer)
+
+    router._route_alert(_make_alert(unknown_field="garbage"))
+
+    body = mock_publisher.publish_to_queue.call_args.args[1]
+    payload = json.loads(body)
+    assert payload["alert"]["udm"]["metadata"]["event_type"] == "GENERIC_EVENT"
+
+
 def test_router_run_opens_single_shared_connection(
     registry_with_cloudtrail: RouteRegistry,
 ) -> None:
@@ -172,7 +220,7 @@ def test_router_publishes_to_dlq_on_publish_failure(
     mock_channel: MagicMock,
     registry_with_cloudtrail: RouteRegistry,
 ) -> None:
-    """When publishing to a runbook queue fails, the alert should go to DLQ."""
+    """When publishing to a workflow queue fails, the alert should go to DLQ."""
     import pika.exceptions
 
     call_count = 0
