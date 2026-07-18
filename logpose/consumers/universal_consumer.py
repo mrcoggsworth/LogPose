@@ -165,15 +165,14 @@ class UniversalHTTPConsumer(BaseConsumer):
 
 def _main() -> None:
     """Standalone entry point: publish received alerts to QUEUE_ALERTS."""
-    import logging as _logging
-    import sys as _sys
+    import sys
 
     from logpose.queue.rabbitmq import RabbitMQPublisher
 
-    _logging.basicConfig(
-        level=_logging.INFO,
+    logging.basicConfig(
+        level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=_sys.stdout,
+        stream=sys.stdout,
     )
 
     emitter = MetricsEmitter()
