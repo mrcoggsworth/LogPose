@@ -62,42 +62,7 @@ being down, not on missing variables).
 
 ## 2. Update `CLAUDE.md` Phase II to describe the new architecture
 
-**Status:** ✅ **DONE** — owner granted permission and CLAUDE.md was updated in
-this branch: phases rewritten for the N8N + UDM architecture, a "Current
-Architecture" summary added at the top, plus new NOT-do guardrails (no
-enrichment logic in this repo, don't recreate runbooks/enrichers, don't rename
-UDM/queue contract names) and project-specific patterns. Remaining "runbook"
-mentions are labeled as retired history. Nothing left to do here.
-
-Original context (kept for the record): it's your project-instruction file and
-described the original phase plan ("route … to the correct runbook as code",
-"Each runbook as code will run as a separate pod"). Rewriting your own charter
-document felt like an owner decision, not a refactor step.
-
-**Why:** `CLAUDE.md` is loaded into every future Claude Code session as
-authoritative project context. As written, it instructs future sessions that
-Phase II is runbooks-as-code inside this repo. A future session taking it at
-face value could "helpfully" rebuild the runbooks package or route new work the
-old way.
-
-**How:** In the Phase II section, replace the runbook language with the current
-reality, e.g.:
-
-> Route registered events from RabbitMQ to the correct **N8N workflow**. Each
-> route has a dedicated workflow-worker pod (`logpose/workflows/worker_main.py`,
-> configured via `LOGPOSE_ROUTE` + `N8N_WEBHOOK_URL`) that POSTs the UDM-shaped
-> alert to the route's N8N webhook and publishes the JSON response to the
-> `enriched` queue. Enrichment logic lives in N8N, not in this repository.
-> Alerts are normalized to a Chronicle-style UDM view
-> (`logpose/models/udm.py`, mappers in `logpose/udm/`) by the router after
-> route matching. Failed invocations go to `alerts.dlq`
-> (`workflow_failed` / `workflow_bad_response`).
-
-Also worth adding under "Things Claude Should NOT Do": *"Don't add enrichment
-logic to this repo — enrichment belongs in N8N workflows."*
-
-**Done when:** `grep -i runbook CLAUDE.md` returns nothing that describes the
-*current* architecture (historical narrative is fine if labeled as such).
+This section has already been completed, proceed to number 3.
 
 ---
 
