@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from logpose.queue.queues import QUEUE_RUNBOOK_TEST
+from logpose.queue.queues import QUEUE_WORKFLOW_TEST
 from logpose.routing.registry import Route, registry
 
 
@@ -21,7 +21,7 @@ def matches(raw_payload: dict[str, Any]) -> bool:
 registry.register(
     Route(
         name="test",
-        queue=QUEUE_RUNBOOK_TEST,
+        queue=QUEUE_WORKFLOW_TEST,
         matcher=matches,
         description="Operational smoke-test route — use _logpose_test: true in payload",
     )

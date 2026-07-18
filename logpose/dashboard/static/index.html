@@ -210,17 +210,17 @@
     </div>
   </section>
 
-  <!-- Runbook performance -->
+  <!-- Workflow performance -->
   <section>
-    <div class="section-title">Runbook Performance</div>
+    <div class="section-title">Workflow Performance</div>
     <div class="table-box">
-      <h3>Runbook Success / Error Counts</h3>
+      <h3>Workflow Success / Error Counts</h3>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Runbook</th><th>Successes</th><th>Errors</th><th>Error Rate</th></tr>
+            <tr><th>Workflow</th><th>Successes</th><th>Errors</th><th>Error Rate</th></tr>
           </thead>
-          <tbody id="table-runbooks"><tr class="empty-row"><td colspan="4">Loading…</td></tr></tbody>
+          <tbody id="table-workflows"><tr class="empty-row"><td colspan="4">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -256,11 +256,11 @@
         </div>
       </div>
       <div class="table-box">
-        <h3>Available Runbooks</h3>
+        <h3>Available Workflows</h3>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Name</th><th>Source Queue</th></tr></thead>
-            <tbody id="table-runbooks-ref"><tr class="empty-row"><td colspan="2">Loading…</td></tr></tbody>
+            <tbody id="table-workflows-ref"><tr class="empty-row"><td colspan="2">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -325,18 +325,18 @@ function updateOrCreate(id, type, labels, data) {
 // ── Data fetching ──────────────────────────────────────────────────────────
 async function fetchAll() {
   try {
-    const [overview, metrics, queues, routes, runbooks] = await Promise.all([
+    const [overview, metrics, queues, routes, workflows] = await Promise.all([
       fetch('/api/overview').then(r => r.json()),
       fetch('/api/metrics').then(r => r.json()),
       fetch('/api/queues').then(r => r.json()),
       fetch('/api/routes').then(r => r.json()),
-      fetch('/api/runbooks').then(r => r.json()),
+      fetch('/api/workflows').then(r => r.json()),
     ]);
     renderOverview(overview);
     renderMetrics(metrics);
     renderQueues(queues);
     renderRoutesRef(routes);
-    renderRunbooksRef(runbooks);
+    renderWorkflowsRef(workflows);
     setConnected(true);
   } catch (e) {
     setConnected(false);
@@ -368,19 +368,19 @@ function renderMetrics(m) {
   const ai = m.alert_ingested || {};
   updateOrCreate('chart-sources', 'doughnut', Object.keys(ai), Object.values(ai));
 
-  // Runbook performance table
-  const allRunbooks = new Set([
-    ...Object.keys(m.runbook_success || {}),
-    ...Object.keys(m.runbook_error || {})
+  // Workflow performance table
+  const allWorkflows = new Set([
+    ...Object.keys(m.workflow_success || {}),
+    ...Object.keys(m.workflow_error || {})
   ]);
-  const tbody = document.getElementById('table-runbooks');
-  if (allRunbooks.size === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="4">No runbook events yet</td></tr>';
+  const tbody = document.getElementById('table-workflows');
+  if (allWorkflows.size === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="4">No workflow events yet</td></tr>';
     return;
   }
-  tbody.innerHTML = [...allRunbooks].sort().map(rb => {
-    const s = (m.runbook_success || {})[rb] || 0;
-    const e = (m.runbook_error || {})[rb] || 0;
+  tbody.innerHTML = [...allWorkflows].sort().map(rb => {
+    const s = (m.workflow_success || {})[rb] || 0;
+    const e = (m.workflow_error || {})[rb] || 0;
     const total = s + e;
     const rate = total > 0 ? ((e / total) * 100).toFixed(1) + '%' : '0%';
     const badge = e === 0
@@ -444,13 +444,13 @@ function renderRoutesRef(routes) {
   ).join('');
 }
 
-function renderRunbooksRef(runbooks) {
-  const tbody = document.getElementById('table-runbooks-ref');
-  if (!runbooks.length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="2">No runbooks discovered</td></tr>';
+function renderWorkflowsRef(workflows) {
+  const tbody = document.getElementById('table-workflows-ref');
+  if (!workflows.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="2">No workflows discovered</td></tr>';
     return;
   }
-  tbody.innerHTML = runbooks.map(rb =>
+  tbody.innerHTML = workflows.map(rb =>
     `<tr>
       <td><code style="color:var(--accent)">${rb.name}</code></td>
       <td><code style="color:var(--purple)">${rb.source_queue}</code></td>

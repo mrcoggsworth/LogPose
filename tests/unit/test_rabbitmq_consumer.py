@@ -20,9 +20,7 @@ MockPikaTriple = tuple[MagicMock, MagicMock, MagicMock]
 @pytest.fixture()
 def mock_pika() -> Generator[MockPikaTriple, None, None]:
     """Patch pika.BlockingConnection so no real broker is needed."""
-    with patch(
-        "logpose.queue.rabbitmq_consumer.pika.BlockingConnection"
-    ) as mock_conn_cls:
+    with patch("logpose.queue.rabbitmq_consumer.pika.BlockingConnection") as mock_conn_cls:
         mock_conn: MagicMock = MagicMock()
         mock_channel: MagicMock = MagicMock()
         mock_conn.channel.return_value = mock_channel
@@ -64,9 +62,7 @@ def test_consume_acks_on_successful_callback(mock_pika: MockPikaTriple) -> None:
     mock_method.delivery_tag = 42
 
     def fake_start_consuming() -> None:
-        registered_cb = mock_channel.basic_consume.call_args.kwargs[
-            "on_message_callback"
-        ]
+        registered_cb = mock_channel.basic_consume.call_args.kwargs["on_message_callback"]
         registered_cb(mock_channel, mock_method, MagicMock(), alert_json)
 
     mock_channel.start_consuming.side_effect = fake_start_consuming
@@ -88,15 +84,13 @@ def test_consume_nacks_on_callback_exception(mock_pika: MockPikaTriple) -> None:
     alert_json = alert.model_dump_json().encode()
 
     def bad_callback(a: Alert) -> None:
-        raise ValueError("runbook failure")
+        raise ValueError("workflow failure")
 
     mock_method = MagicMock()
     mock_method.delivery_tag = 99
 
     def fake_start_consuming() -> None:
-        registered_cb = mock_channel.basic_consume.call_args.kwargs[
-            "on_message_callback"
-        ]
+        registered_cb = mock_channel.basic_consume.call_args.kwargs["on_message_callback"]
         registered_cb(mock_channel, mock_method, MagicMock(), alert_json)
 
     mock_channel.start_consuming.side_effect = fake_start_consuming
@@ -118,9 +112,7 @@ def test_consume_nacks_on_bad_json(mock_pika: MockPikaTriple) -> None:
     mock_method.delivery_tag = 7
 
     def fake_start_consuming() -> None:
-        registered_cb = mock_channel.basic_consume.call_args.kwargs[
-            "on_message_callback"
-        ]
+        registered_cb = mock_channel.basic_consume.call_args.kwargs["on_message_callback"]
         registered_cb(mock_channel, mock_method, MagicMock(), b"not-valid-json")
 
     mock_channel.start_consuming.side_effect = fake_start_consuming
@@ -173,6 +165,7 @@ def test_connect_retries_on_amqp_error() -> None:
 # ---------------------------------------------------------------------------
 # Shared-connection path
 # ---------------------------------------------------------------------------
+
 
 def _make_shared_conn() -> tuple[MagicMock, MagicMock]:
     mock_conn: MagicMock = MagicMock()

@@ -66,9 +66,7 @@ class EnrichedAlertForwarder:
                 self._channel = self._connection.channel()
                 self._channel.basic_qos(prefetch_count=1)
                 self._channel.queue_declare(queue=QUEUE_ENRICHED, durable=True)
-                logger.info(
-                    "EnrichedAlertForwarder connected, queue=%s", QUEUE_ENRICHED
-                )
+                logger.info("EnrichedAlertForwarder connected, queue=%s", QUEUE_ENRICHED)
                 return
             except pika.exceptions.AMQPConnectionError as exc:
                 logger.warning(
@@ -125,9 +123,7 @@ class EnrichedAlertForwarder:
             on_message_callback=_on_message,
             auto_ack=False,
         )
-        logger.info(
-            "EnrichedAlertForwarder starting consume loop on queue=%s", QUEUE_ENRICHED
-        )
+        logger.info("EnrichedAlertForwarder starting consume loop on queue=%s", QUEUE_ENRICHED)
         self._channel.start_consuming()
 
     def stop(self) -> None:
@@ -154,10 +150,10 @@ class EnrichedAlertForwarder:
 
         Routes to self._universal when enriched.destination == "universal";
         otherwise delivers to Splunk HEC. The destination field is stamped
-        by BaseRunbook based on each runbook's class attribute.
+        by the workflow response contract (defaults to "splunk").
         """
         event_data = json.loads(enriched.model_dump_json())
-        source = enriched.runbook or enriched.alert.source
+        source = enriched.workflow or enriched.alert.source
         timestamp = enriched.enriched_at.timestamp()
 
         if enriched.destination == "universal":
@@ -175,9 +171,9 @@ class EnrichedAlertForwarder:
             self._universal.send(event)
             self._universal.flush()
             logger.info(
-                "Forwarded EnrichedAlert %s (runbook=%s) to universal endpoint",
+                "Forwarded EnrichedAlert %s (workflow=%s) to universal endpoint",
                 enriched.alert.id,
-                enriched.runbook,
+                enriched.workflow,
             )
             return
 
@@ -190,9 +186,9 @@ class EnrichedAlertForwarder:
         self._splunk.send(event)
         self._splunk.flush()
         logger.info(
-            "Forwarded EnrichedAlert %s (runbook=%s) to Splunk",
+            "Forwarded EnrichedAlert %s (workflow=%s) to Splunk",
             enriched.alert.id,
-            enriched.runbook,
+            enriched.workflow,
         )
 
     def __enter__(self) -> "EnrichedAlertForwarder":

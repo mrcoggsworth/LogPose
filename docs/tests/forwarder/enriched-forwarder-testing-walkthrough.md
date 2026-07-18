@@ -18,15 +18,15 @@ EnrichedAlertForwarder.run()       ← blocking consume loop
                    │
                    ├─ build HEC event:
                    │     sourcetype: "logpose:enriched_alert"
-                   │     source: enriched.runbook  (or alert.source if runbook empty)
+                   │     source: enriched.workflow  (or alert.source if workflow empty)
                    │     time: enriched.enriched_at.timestamp()
-                   │     event: { alert: {...}, runbook: "...", extracted: {...} }
+                   │     event: { alert: {...}, workflow: "...", extracted: {...} }
                    │
                    ├─ splunk.send(event)
                    └─ splunk.flush()
 ```
 
-Every alert that passes through a runbook ends up here, including ones where the runbook encountered an error (`runbook_error` field will be non-None). Partial enrichment is still forwarded — nothing is silently dropped.
+Every alert that passes through a workflow ends up here, including ones where the workflow reported a handled error (`workflow_error` field will be non-None). Partial enrichment is still forwarded — nothing is silently dropped.
 
 ---
 
@@ -79,13 +79,13 @@ This pattern is used across the forwarder tests wherever the constructor has sid
 
 ```python
 def _make_enriched(
-    runbook: str = "cloud.aws.cloudtrail",
+    workflow: str = "cloud.aws.cloudtrail",
     extracted: dict | None = None,
 ) -> EnrichedAlert:
     alert = Alert(source="sqs", raw_payload={"eventName": "ConsoleLogin"})
     return EnrichedAlert(
         alert=alert,
-        runbook=runbook,
+        workflow=workflow,
         extracted=extracted or {"user": "alice", "event_name": "ConsoleLogin"},
     )
 ```
@@ -101,12 +101,12 @@ Creates a realistic `EnrichedAlert` with sensible defaults. Tests that need diff
 | Test | What it asserts |
 |------|----------------|
 | `test_forward_sets_enriched_alert_sourcetype` | `event["sourcetype"] == "logpose:enriched_alert"` |
-| `test_forward_uses_runbook_as_splunk_source` | `event["source"] == "cloud.aws.cloudtrail"` (the runbook name) |
-| `test_forward_falls_back_to_alert_source_when_runbook_empty` | When `runbook=""`, `event["source"] == "kafka"` (the alert source) |
+| `test_forward_uses_workflow_as_splunk_source` | `event["source"] == "cloud.aws.cloudtrail"` (the workflow name) |
+| `test_forward_falls_back_to_alert_source_when_workflow_empty` | When `workflow=""`, `event["source"] == "kafka"` (the alert source) |
 
 The sourcetype `logpose:enriched_alert` is what distinguishes enriched alerts from DLQ alerts in Splunk. It must be consistent for index-time field extractions to work.
 
-The source field is set to the runbook name so analysts can filter Splunk events by which runbook processed them (e.g., `source="cloud.aws.cloudtrail"`).
+The source field is set to the workflow name so analysts can filter Splunk events by which workflow processed them (e.g., `source="cloud.aws.cloudtrail"`).
 
 ### Event payload
 

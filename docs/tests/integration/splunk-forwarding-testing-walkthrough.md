@@ -105,7 +105,7 @@ The test thread then calls `thread.join(timeout=15)`. If the forwarder hangs —
 
 ### `test_enriched_alert_is_forwarded_to_splunk`
 
-Publishes an `EnrichedAlert` (CloudTrail, source `sqs`, runbook `cloud.aws.cloudtrail`) to `QUEUE_ENRICHED` using `model_dump_json()`. Runs the enriched forwarder one-shot. Asserts:
+Publishes an `EnrichedAlert` (CloudTrail, source `sqs`, workflow `cloud.aws.cloudtrail`) to `QUEUE_ENRICHED` using `model_dump_json()`. Runs the enriched forwarder one-shot. Asserts:
 
 - `len(sent_events) == 1`
 - `event["sourcetype"] == "logpose:enriched_alert"`
@@ -113,7 +113,7 @@ Publishes an `EnrichedAlert` (CloudTrail, source `sqs`, runbook `cloud.aws.cloud
 - `event["index"] == "logpose_alerts"`
 - `event["event"]["alert"]["id"] == alert.id`
 - `event["event"]["extracted"]["user"] == "alice"`
-- `event["event"]["runbook"] == "cloud.aws.cloudtrail"`
+- `event["event"]["workflow"] == "cloud.aws.cloudtrail"`
 
 ### `test_dlq_alert_is_forwarded_to_splunk`
 
@@ -126,15 +126,15 @@ Publishes a raw DLQ dict (not Pydantic — `json.dumps`) to `QUEUE_DLQ`. Runs th
 - `event["event"]["dlq_reason"] == "no_route_matched"`
 - `event["event"]["alert"]["id"] == "dlq-integration-test-id"`
 
-### `test_enriched_alert_with_runbook_error_still_forwarded`
+### `test_enriched_alert_with_workflow_error_still_forwarded`
 
-Publishes an `EnrichedAlert` with `runbook_error="KeyError: 'protoPayload'"` (simulating a runbook that failed during extraction). Runs the enriched forwarder one-shot. Asserts:
+Publishes an `EnrichedAlert` with `workflow_error="KeyError: 'protoPayload'"` (simulating a workflow that reported a handled error). Runs the enriched forwarder one-shot. Asserts:
 
 - `len(sent_events) == 1`
-- `event["event"]["runbook_error"] == "KeyError: 'protoPayload'"`
+- `event["event"]["workflow_error"] == "KeyError: 'protoPayload'"`
 - `event["event"]["alert"]["id"] == alert.id`
 
-This test verifies the "no silent drops" guarantee: even when a runbook fails, the partial `EnrichedAlert` reaches Splunk so analysts can see what happened.
+This test verifies the "no silent drops" guarantee: even when a workflow fails partway, the partial `EnrichedAlert` reaches Splunk so analysts can see what happened.
 
 ---
 
@@ -159,4 +159,4 @@ def forwarding_channel(phase2_rabbitmq_channel):
 
 `phase2_rabbitmq_channel` declares all Phase II and Phase III queues (including `enriched` and `alerts.dlq`). `purge_queues` ensures each test starts with empty queues — critical for the `len(sent_events) == 1` assertion.
 
-See `tests/integration/conftest.py` for the full fixture implementations, or the [integration tests walkthrough](integration-tests-walkthrough.md) for a complete fixture reference.
+See `tests/integration/conftest.py` for the full fixture implementations.

@@ -20,7 +20,7 @@ The `logpose.metrics` package provides `MetricsEmitter` — a lightweight, fire-
 
 `MetricsEmitter` publishes small JSON events to the `logpose.metrics` RabbitMQ queue. The dashboard pod's `MetricsConsumer` drains that queue and increments in-memory counters that power the dashboard's stat cards.
 
-Every significant action in the pipeline — an alert ingested, a route matched, an alert sent to the DLQ, a runbook succeeding or failing — results in a `MetricsEmitter.emit()` call. This gives the dashboard a real-time, source-of-truth view of what the pipeline is doing without any direct dependency between the pipeline components and the dashboard.
+Every significant action in the pipeline — an alert ingested, a route matched, an alert sent to the DLQ, an N8N workflow succeeding or failing — results in a `MetricsEmitter.emit()` call. This gives the dashboard a real-time, source-of-truth view of what the pipeline is doing without any direct dependency between the pipeline components and the dashboard.
 
 ```
 KafkaConsumer         SqsConsumer         Router
@@ -29,11 +29,11 @@ KafkaConsumer         SqsConsumer         Router
 MetricsEmitter.emit("alert_ingested")    MetricsEmitter.emit("route_matched")
 MetricsEmitter.emit("alert_ingested")    MetricsEmitter.emit("dlq_enqueued")
                                               │
-                              CloudTrailRunbook
+                              WorkflowWorker
                                     │
                                     ▼
-                        MetricsEmitter.emit("runbook_success")
-                        MetricsEmitter.emit("enricher_duration_ms")
+                        MetricsEmitter.emit("workflow_success")
+                        MetricsEmitter.emit("workflow_success")
                         MetricsEmitter.emit("principal_cache_stats")
                                     │
                                     ▼ (all events → logpose.metrics queue)
@@ -75,16 +75,13 @@ These are the event names the dashboard's `MetricsConsumer` knows how to count. 
 | `alert_ingested` | All consumers | `{"source": "kafka"}` | Alerts ingested total |
 | `route_matched` | Router | `{"route": "cloud.aws.cloudtrail"}` | Routes matched by name |
 | `dlq_enqueued` | Router | `{"reason": "no_route_matched"}` | DLQ entries total |
-| `runbook_success` | BaseRunbook | `{"runbook": "cloud.aws.cloudtrail"}` | Runbook successes by name |
-| `runbook_error` | BaseRunbook | `{"runbook": "...", "error": "..."}` | Runbook errors by name |
-| `enricher_duration_ms` | CloudTrailRunbook | `{"enricher": "...", "duration_ms": 42, "runbook": "..."}` | Per-enricher timing |
-| `enricher_error` | CloudTrailRunbook | `{"enricher": "...", "type": "...", "runbook": "..."}` | Per-enricher error count |
-| `enricher_pipeline_duration_ms` | CloudTrailRunbook | `{"runbook": "...", "duration_ms": 180, "stages_completed": 3}` | End-to-end pipeline timing |
-| `principal_cache_stats` | CloudTrailRunbook | `{"hits": 5, "misses": 3, "size": 8, "runbook": "..."}` | Cache hit/miss ratio |
+| `workflow_success` | WorkflowWorker | `{"workflow": "cloud.aws.cloudtrail"}` | N8N workflow successes by route |
+| `workflow_error` | WorkflowWorker | `{"workflow": "...", "reason": "workflow_failed"}` | Failed N8N invocations by route |
 
 The `dlq_reason` values currently in use are:
 - `"no_route_matched"` — router found no matching route for the alert's payload.
-- `"publish_failed"` — router matched a route but the publish to the runbook queue raised.
+- `"publish_failed"` — router matched a route but the publish to the workflow queue raised.
+- `"workflow_failed"` / `"workflow_bad_response"` — the worker could not get a usable response from the route's N8N webhook.
 
 ---
 

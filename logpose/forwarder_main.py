@@ -4,7 +4,7 @@ Starts two consumer threads that drain the end of the Phase II pipeline:
 
   1. EnrichedAlertForwarder — reads from 'enriched' queue. Routes each
      EnrichedAlert to Splunk HEC by default, or to an arbitrary HTTP
-     endpoint when the runbook marks the alert with destination="universal".
+     endpoint when the workflow marks the alert with destination="universal".
   2. DLQForwarder           — reads from 'alerts.dlq' queue and sends to Splunk.
 
 Each thread gets its own SplunkHECClient instance (not thread-safe to share).
@@ -19,7 +19,7 @@ Environment variables required:
     SPLUNK_INDEX      — target Splunk index (default: main)
 
 Optional environment variables (universal forwarder — only used when a
-runbook sets destination="universal"):
+workflow sets destination="universal"):
     UNIVERSAL_FORWARDER_URL              — destination URL
     UNIVERSAL_FORWARDER_AUTH_HEADER      — e.g. "Bearer abc123"
     UNIVERSAL_FORWARDER_TIMEOUT_SECONDS  — default 10
@@ -53,7 +53,7 @@ def main() -> None:
     enriched_splunk = SplunkHECClient()
     dlq_splunk = SplunkHECClient()
 
-    # Universal HTTP client only used when a runbook marks the alert
+    # Universal HTTP client only used when a workflow marks the alert
     # destination="universal". Skip construction when unconfigured so
     # deployments that only forward to Splunk need no extra env vars.
     enriched_universal: UniversalHTTPClient | None = (

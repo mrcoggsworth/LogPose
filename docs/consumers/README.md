@@ -23,7 +23,7 @@ This document covers every consumer class, the shared `BaseConsumer` contract, l
 
 ## Architecture Overview
 
-Each consumer runs as its own independent pod. The ingestion layer is intentionally designed so that adding a new event source requires creating exactly one new file and starting one new pod — no changes to the router or runbooks.
+Each consumer runs as its own independent pod. The ingestion layer is intentionally designed so that adding a new event source requires creating exactly one new file and starting one new pod — no changes to the router or workflows.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -389,4 +389,4 @@ To add a consumer for a new event source:
 6. **Add** an `if __name__ == "__main__": _main()` guard so the file is startable as a standalone pod.
 7. **Document** the new environment variables in `docs/consumers/README.md`.
 
-The router, runbooks, and forwarder require no changes.
+The router, workflows, and forwarder require no changes.

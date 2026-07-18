@@ -1,27 +1,26 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Any
 
 import pika
 import pika.exceptions
 
 from logpose.metrics.emitter import MetricsEmitter
 from logpose.models.alert import Alert
+from logpose.queue.dlq import build_dlq_message
 from logpose.queue.queues import QUEUE_ALERTS, QUEUE_DLQ
 from logpose.queue.rabbitmq import RabbitMQPublisher
 from logpose.queue.rabbitmq_consumer import RabbitMQConsumer
 from logpose.routing.registry import RouteRegistry
+from logpose.udm.normalize import normalize_alert
 
 logger = logging.getLogger(__name__)
 
 
 class Router:
     """Consumes from the alerts queue, matches each Alert to a route,
-    and publishes to the appropriate runbook queue or the DLQ.
+    and publishes to the appropriate workflow queue or the DLQ.
 
     Routing logic lives entirely in the RouteRegistry — this class
     only orchestrates connections and message flow.
@@ -91,7 +90,7 @@ class Router:
         self._consumer.stop()
 
     def _route_alert(self, alert: Alert) -> None:
-        """Core dispatch: match alert to a route and publish to its queue."""
+        """Core dispatch: match alert to a route, attach UDM, publish to its queue."""
         route = self._registry.match(alert.raw_payload)
 
         if route is None:
@@ -101,11 +100,15 @@ class Router:
                 alert.source,
             )
             self._publish_to_dlq(
-                alert,
+                alert.model_copy(update={"udm": normalize_alert(alert, None)}),
                 reason="no_route_matched",
                 detail=f"No matcher returned True for payload keys: {list(alert.raw_payload.keys())}",
             )
             return
+
+        # Normalize AFTER matching so the mapper is chosen by route, and the
+        # workflow receives a UDM-shaped alert. normalize_alert never raises.
+        alert = alert.model_copy(update={"udm": normalize_alert(alert, route.name)})
 
         try:
             body = alert.model_dump_json().encode()
@@ -143,14 +146,7 @@ class Router:
         detail: str = "",
     ) -> None:
         """Publish an alert to the DLQ with routing failure metadata."""
-        dlq_message: dict[str, Any] = {
-            "alert": json.loads(alert.model_dump_json()),
-            "dlq_reason": reason,
-            "dlq_at": datetime.now(tz=timezone.utc).isoformat(),
-            "original_queue": QUEUE_ALERTS,
-            "error_detail": detail,
-        }
-        body = json.dumps(dlq_message).encode()
+        body = build_dlq_message(alert, reason=reason, original_queue=QUEUE_ALERTS, detail=detail)
         properties = pika.BasicProperties(
             content_type="application/json",
             delivery_mode=2,  # persistent

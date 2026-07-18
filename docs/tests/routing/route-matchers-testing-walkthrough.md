@@ -23,11 +23,11 @@ Alert.raw_payload
       ▼
 RouteRegistry.match()
       │
-      ├── eks.matches()          → True?  ─→  runbook.eks
-      ├── cloudtrail.matches()   → True?  ─→  runbook.cloudtrail
-      ├── guardduty.matches()    → True?  ─→  runbook.guardduty
-      ├── event_audit.matches()  → True?  ─→  runbook.gcp.event_audit
-      └── test_route.matches()   → True?  ─→  runbook.test
+      ├── eks.matches()          → True?  ─→  workflow.eks
+      ├── cloudtrail.matches()   → True?  ─→  workflow.cloudtrail
+      ├── guardduty.matches()    → True?  ─→  workflow.guardduty
+      ├── event_audit.matches()  → True?  ─→  workflow.gcp.event_audit
+      └── test_route.matches()   → True?  ─→  workflow.test
                                          ↓ (none matched)
                                         DLQ
 ```
@@ -209,12 +209,12 @@ The router logs registered routes at startup:
 
 ```
 Router started. Registered routes: ['cloud.aws.eks', 'cloud.aws.cloudtrail', 'cloud.aws.guardduty', 'cloud.gcp.event_audit', 'test']
-Routed alert manual-test -> route='cloud.aws.cloudtrail' queue='runbook.cloudtrail'
+Routed alert manual-test -> route='cloud.aws.cloudtrail' queue='workflow.cloudtrail'
 ```
 
 ### Step 4: Verify the routed message
 
-In the RabbitMQ UI, navigate to **Queues → runbook.cloudtrail** and use **Get messages** to confirm the alert arrived. The `alerts` queue should now be empty.
+In the RabbitMQ UI, navigate to **Queues → workflow.cloudtrail** and use **Get messages** to confirm the alert arrived. The `alerts` queue should now be empty.
 
 To test the DLQ path, publish a payload that matches no route:
 
@@ -262,7 +262,7 @@ The `-s` flag disables output capture so you can see routing log lines in the te
 PASSED tests/integration/test_routing_flow.py::test_cloudtrail_alert_routed_to_cloudtrail_queue
 PASSED tests/integration/test_routing_flow.py::test_unroutable_alert_goes_to_dlq
 PASSED tests/integration/test_routing_flow.py::test_test_route_alert_routed_to_test_queue
-PASSED tests/integration/test_routing_flow.py::test_cloudtrail_runbook_enriches_and_publishes_to_enriched_queue
+PASSED tests/integration/test_routing_flow.py::test_workflow_worker_invokes_n8n_and_publishes_to_enriched_queue
 ```
 
 ---
@@ -277,6 +277,6 @@ PASSED tests/integration/test_routing_flow.py::test_cloudtrail_runbook_enriches_
 | [`logpose/routing/routes/cloud/gcp/event_audit.py`](../../../logpose/routing/routes/cloud/gcp/event_audit.py) | GCP audit matcher — `protoPayload["@type"]` URL |
 | [`logpose/routing/routes/test_route.py`](../../../logpose/routing/routes/test_route.py) | Test/smoke matcher — `_logpose_test is True` |
 | [`logpose/routing/routes/__init__.py`](../../../logpose/routing/routes/__init__.py) | Route registration order — most specific first |
-| [`tests/unit/test_route_matchers.py`](../../unit/test_route_matchers.py) | Pure-function matcher tests — no mocks or Docker needed |
-| [`tests/integration/test_routing_flow.py`](../test_routing_flow.py) | End-to-end routing tests against live RabbitMQ |
+| [`tests/unit/test_route_matchers.py`](../../../tests/unit/test_route_matchers.py) | Pure-function matcher tests — no mocks or Docker needed |
+| [`tests/integration/test_routing_flow.py`](../../../tests/integration/test_routing_flow.py) | End-to-end routing tests against live RabbitMQ |
 | [`docker/docker-compose.yml`](../../../docker/docker-compose.yml) | RabbitMQ service definition (port 5672, management UI port 15672) |

@@ -9,7 +9,7 @@ This document covers how to test the `RabbitMQConsumer` at two levels:
 
 ## Background: RabbitMQConsumer and How It Works
 
-`RabbitMQConsumer` is the generic blocking consume loop used by the Router and every runbook. It reads `Alert` objects from a named durable queue and passes them to a callback function.
+`RabbitMQConsumer` is the generic blocking consume loop used by the Router and every workflow worker. It reads `Alert` objects from a named durable queue and passes them to a callback function.
 
 ```
 RabbitMQ queue (any durable queue)
@@ -33,12 +33,12 @@ Key behaviors:
 
 - **Prefetch 1** — `basic_qos(prefetch_count=1)` ensures the consumer processes one message at a time; a second message is not fetched until the first is acked or nacked
 - **Ack on success** — callback completes without raising → `basic_ack`
-- **Nack without requeue on callback error** — callback raises → `basic_nack(requeue=False)`; the caller (Router or runbook) is responsible for routing to the DLQ before the exception propagates
+- **Nack without requeue on callback error** — callback raises → `basic_nack(requeue=False)`; the caller (Router or worker) is responsible for routing to the DLQ before the exception propagates
 - **Nack on bad JSON** — malformed message body is nacked immediately; the callback is never called
 - **Retry on connect** — `connect()` retries up to 5 times with a 2-second delay before raising `RuntimeError`
 - **Context manager** — supports `with RabbitMQConsumer(...) as consumer:` which calls `connect()` on enter and `disconnect()` on exit
 
-The consumer is defined in `logpose/queue/rabbitmq_consumer.py`. The queue name is passed at construction time — the same class is used for `alerts`, `runbook.cloudtrail`, `runbook.gcp.event_audit`, `runbook.test`, and any future runbook queues.
+The consumer is defined in `logpose/queue/rabbitmq_consumer.py`. The queue name is passed at construction time — the same class is used for `alerts`, `workflow.cloudtrail`, `workflow.gcp.event_audit`, `workflow.test`, and any future workflow queues.
 
 ---
 
@@ -274,7 +274,7 @@ from logpose.queue.rabbitmq_consumer import RabbitMQConsumer
 
 def bad_callback(alert: Alert) -> None:
     consumer.stop()
-    raise ValueError('simulated runbook failure')
+    raise ValueError('simulated workflow failure')
 
 consumer = RabbitMQConsumer(queue='alerts', url='amqp://guest:guest@localhost:5672/')
 with consumer:
@@ -282,7 +282,7 @@ with consumer:
 "
 ```
 
-After this runs, the `alerts` queue should be empty — the message was nacked with `requeue=False`, so it is dropped (or forwarded to a configured DLQ if one is bound). The router and runbooks handle DLQ routing in application code before the callback exception propagates.
+After this runs, the `alerts` queue should be empty — the message was nacked with `requeue=False`, so it is dropped (or forwarded to a configured DLQ if one is bound). The router and workers handle DLQ routing in application code before the callback exception propagates.
 
 ### Step 4: Run the integration tests
 
@@ -290,7 +290,7 @@ After this runs, the `alerts` queue should be empty — the message was nacked w
 pytest tests/integration/test_routing_flow.py -v -m integration -s
 ```
 
-The integration tests exercise `RabbitMQConsumer` indirectly — the Router and runbook instances all use it internally. Passing integration tests confirm that the consumer correctly delivers messages through the full pipeline.
+The integration tests exercise `RabbitMQConsumer` indirectly — the Router and worker instances all use it internally. Passing integration tests confirm that the consumer correctly delivers messages through the full pipeline.
 
 ---
 
@@ -302,8 +302,8 @@ The integration tests exercise `RabbitMQConsumer` indirectly — the Router and 
 | [`logpose/queue/rabbitmq.py`](../../../logpose/queue/rabbitmq.py) | RabbitMQPublisher — the write-side counterpart |
 | [`logpose/models/alert.py`](../../../logpose/models/alert.py) | Alert model — deserialized from each consumed message body |
 | [`logpose/routing/router.py`](../../../logpose/routing/router.py) | Router — uses `RabbitMQConsumer` to consume from the `alerts` queue |
-| [`logpose/runbooks/base.py`](../../../logpose/runbooks/base.py) | BaseRunbook — uses `RabbitMQConsumer` to consume from each runbook queue |
-| [`logpose/queue/queues.py`](../../../logpose/queue/queues.py) | Queue name constants — `QUEUE_ALERTS`, runbook queue names |
-| [`tests/unit/test_rabbitmq_consumer.py`](../../unit/test_rabbitmq_consumer.py) | Unit tests — all pika calls mocked, no Docker needed |
-| [`tests/integration/conftest.py`](../conftest.py) | Integration test fixtures and helpers |
+| [`logpose/workflows/worker.py`](../../../logpose/workflows/worker.py) | WorkflowWorker — uses `RabbitMQConsumer` to consume from each workflow queue |
+| [`logpose/queue/queues.py`](../../../logpose/queue/queues.py) | Queue name constants — `QUEUE_ALERTS`, workflow queue names |
+| [`tests/unit/test_rabbitmq_consumer.py`](../../../tests/unit/test_rabbitmq_consumer.py) | Unit tests — all pika calls mocked, no Docker needed |
+| [`tests/integration/conftest.py`](../../../tests/integration/conftest.py) | Integration test fixtures and helpers |
 | [`docker/docker-compose.yml`](../../../docker/docker-compose.yml) | RabbitMQ service definition (port 5672, management UI port 15672) |

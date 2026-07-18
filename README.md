@@ -32,7 +32,7 @@
 
 LogPose is a **headless Security Orchestration, Automation, and Response (SOAR) platform** built for modern cloud-native infrastructure on OpenShift. It is designed to be lightweight, event-driven, and fully composable — no UI, no vendor lock-in, no monolith.
 
-Security alerts pour in from wherever your infrastructure lives — Kafka streams, AWS SQS queues backed by SNS, or GCP Pub/Sub topics. LogPose normalizes them, routes each alert to the correct runbook pod (via RabbitMQ), enriches the alert data, and forwards the results to Splunk for analyst review — all without any of those steps knowing about each other.
+Security alerts pour in from wherever your infrastructure lives — Kafka streams, AWS SQS queues backed by SNS, or GCP Pub/Sub topics. LogPose normalizes them into a Google Chronicle-style **Unified Data Model (UDM)** view, routes each alert (via RabbitMQ) to a per-route **workflow worker pod** that delegates enrichment to an **N8N workflow** over HTTPS, and forwards the results to Splunk for analyst review — all without any of those steps knowing about each other.
 
 Each stage is a separate pod. Each pod communicates through durable queues. A crashed pod leaves the queue intact. A restarted pod picks up exactly where it left off. Failed alerts land in a Dead Letter Queue and still reach Splunk so nothing is silently dropped.
 
@@ -67,10 +67,12 @@ Each stage is a separate pod. Each pod communicates through durable queues. A cr
                                │  consumed by
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     PHASE II — ROUTING                          │
+│                     PHASE II — ROUTING + UDM                    │
 │                                                                 │
 │   Router reads raw_payload fields and matches pure-function     │
-│   matchers registered in RouteRegistry (first match wins).      │
+│   matchers registered in RouteRegistry (first match wins),      │
+│   then attaches a UDM view (metadata, principal, target, src,   │
+│   security_result) chosen by the matched route's mapper.        │
 │                                                                 │
 │   Routes:  cloud → aws → cloudtrail                             │
 │                        → guardduty                              │
@@ -85,14 +87,13 @@ Each stage is a separate pod. Each pod communicates through durable queues. A cr
                 │
                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   PHASE II — RUNBOOKS (per pod)                 │
+│              PHASE II — WORKFLOW WORKERS (per pod)              │
 │                                                                 │
-│   CloudTrailRunbook   GuardDutyRunbook   EksRunbook             │
-│   GcpEventAuditRunbook   TestRunbook                            │
-│                                                                 │
-│   Each runbook consumes its own queue, extracts structured      │
-│   fields from raw_payload, and produces an EnrichedAlert.       │
-│   Errors are captured in runbook_error — no silent drops.       │
+│   One WorkflowWorker pod per route. Each consumes its route's   │
+│   queue and POSTs the UDM-shaped alert to that route's N8N      │
+│   webhook. The workflow's JSON response becomes the             │
+│   EnrichedAlert (extracted fields + optional UDM updates).      │
+│   N8N failures → alerts.dlq (workflow_failed) — no silent drops.│
 └───────────────────────────────┬─────────────────────────────────┘
                                 │  publishes to [enriched] queue
                                 ▼
@@ -128,12 +129,13 @@ Every arrow in this diagram is a **durable RabbitMQ queue**. Pod restarts are sa
 | **Durable queuing** | RabbitMQ with persistent message delivery and durable queues |
 | **Dead Letter Queue** | All unroutable or failed alerts are preserved in `alerts.dlq` |
 | **Modular routing** | Pure-function matchers with a registration pattern — add a new route in one file |
-| **Pod isolation** | Every runbook type runs in its own pod; failures are contained and reported |
-| **Graceful enrichment failures** | Runbooks never throw — errors go into `runbook_error` on the `EnrichedAlert` |
+| **Pod isolation** | Every route's workflow worker runs in its own pod; failures are contained and reported |
+| **UDM normalization** | Chronicle-style Unified Data Model view attached to every routed alert (`Alert.udm`) |
+| **N8N enrichment** | Enrichment lives in N8N workflows; failed invocations land in the DLQ (`workflow_failed`), never dropped |
 | **Splunk HEC forwarding** | Batched HTTP Event Collector with exponential backoff retry |
 | **Type-safe models** | Pydantic v2 frozen models for `Alert` and `EnrichedAlert` |
 | **OpenShift-ready** | Stateless pods, environment-variable configuration, Docker image included |
-| **Observability dashboard** | FastAPI backend + browser UI at :8080 — live queue depths, pipeline counters, route registry, runbook status |
+| **Observability dashboard** | FastAPI backend + browser UI at :8080 — live queue depths, pipeline counters, route registry, workflow status |
 | **Extensive test coverage** | 26 unit test files + 7 integration tests driven by Docker Compose |
 
 ---
@@ -151,7 +153,7 @@ Every arrow in this diagram is a **durable RabbitMQ queue**. Pod restarts are sa
 9. [Project Structure](#project-structure)
 10. [Data Models](#data-models)
 11. [Adding a New Route](#adding-a-new-route)
-12. [Adding a New Runbook](#adding-a-new-runbook)
+12. [Adding a New Workflow](#adding-a-new-workflow)
 13. [Testing](#testing)
 14. [Development Workflow](#development-workflow)
 15. [Contributing](#contributing)
@@ -332,7 +334,7 @@ SPLUNK_INDEX=main
 SPLUNK_BATCH_SIZE=50        # Optional, default is 50 events per POST
 
 # ─── Universal HTTP Forwarder (optional) ──────────────────────────────────────
-# Used only when a runbook marks its EnrichedAlert with destination="universal".
+# Used only when a workflow marks its EnrichedAlert with destination="universal".
 # UNIVERSAL_FORWARDER_URL=https://receiver.example.com/ingest
 # UNIVERSAL_FORWARDER_AUTH_HEADER=Bearer abc123
 # UNIVERSAL_FORWARDER_TIMEOUT_SECONDS=10
@@ -414,21 +416,28 @@ python -m logpose.consumers.universal_consumer
 python -m logpose.router_main
 ```
 
-The router consumes from the `alerts` queue, matches each alert against registered routes, and publishes to the matched runbook queue. Unmatched alerts are sent to `alerts.dlq`.
+The router consumes from the `alerts` queue, matches each alert against registered routes, attaches the route's UDM view, and publishes to the matched workflow queue. Unmatched alerts are sent to `alerts.dlq`.
 
-### Phase II — Start Runbook Pods
+### Phase II — Start Workflow Worker Pods
 
-Each runbook runs independently. In production, each is a separate pod. Run only the runbooks that match the routes you have configured.
+Each route is served by one workflow worker pod pointed at that route's N8N webhook. Run only the workers for the routes you have configured.
 
 ```bash
 # In separate terminals:
-python -m logpose.runbooks.cloud.aws.cloudtrail
-python -m logpose.runbooks.cloud.aws.guardduty
-python -m logpose.runbooks.cloud.aws.eks
-python -m logpose.runbooks.cloud.gcp.event_audit
+LOGPOSE_ROUTE=cloud.aws.cloudtrail \
+N8N_WEBHOOK_URL=https://n8n.example.com/webhook/cloudtrail \
+python -m logpose.workflows.worker_main
 
-# Smoke-test runbook (always safe to run)
-python -m logpose.runbooks.test_runbook
+LOGPOSE_ROUTE=cloud.aws.guardduty \
+N8N_WEBHOOK_URL=https://n8n.example.com/webhook/guardduty \
+python -m logpose.workflows.worker_main
+
+# ... same pattern for cloud.aws.eks and cloud.gcp.event_audit
+
+# Smoke-test worker (always safe to run against an N8N echo workflow)
+LOGPOSE_ROUTE=test \
+N8N_WEBHOOK_URL=https://n8n.example.com/webhook/test \
+python -m logpose.workflows.worker_main
 ```
 
 ### Phase III — Start the Splunk Forwarder
@@ -445,7 +454,7 @@ This starts two threads: one draining the `enriched` queue and one draining the 
 python -m logpose.dashboard_main
 ```
 
-Open [http://localhost:8080](http://localhost:8080) in your browser. The dashboard polls the backend every 10 seconds and shows live queue depths, accumulated pipeline counters, registered routes, and runbook status. Counters are persisted to SQLite and survive pod restarts.
+Open [http://localhost:8080](http://localhost:8080) in your browser. The dashboard polls the backend every 10 seconds and shows live queue depths, accumulated pipeline counters, registered routes, and workflow status. Counters are persisted to SQLite and survive pod restarts.
 
 ### RabbitMQ Management UI
 
@@ -505,21 +514,21 @@ The LogPose Dashboard is a real-time observability interface for the entire pipe
 | `metrics_consumer.py` | Background thread that drains the `logpose.metrics` RabbitMQ queue and increments in-memory counters |
 | `metrics_store.py` | Thread-safe counter store backed by SQLite; flushes every 60 seconds and restores on restart |
 | `rabbitmq_api.py` | HTTP client for the RabbitMQ Management API; fetches live queue depths, rates, and consumer counts |
-| `routes_reader.py` | Reads the live `RouteRegistry` and discovered runbook classes to populate the routes/runbooks API endpoints |
+| `routes_reader.py` | Reads the live `RouteRegistry` to populate the routes/workflows API endpoints |
 
 **Frontend — Browser UI**
 
 The browser UI is a single-page app served directly from the FastAPI backend at `http://localhost:8080`. It polls the backend every 10 seconds and displays:
 
-- **Stat cards** — total alerts ingested, routes matched, runbook successes/errors, DLQ count
+- **Stat cards** — total alerts ingested, routes matched, workflow successes/errors, DLQ count
 - **Queue depth table** — live message counts and consumer counts for every RabbitMQ queue
 - **Pipeline counters** — accumulated metrics broken down by event type
 - **Registered routes** — all active route matchers from the `RouteRegistry`
-- **Runbook status** — discovered runbook classes and their source queues
+- **Workflow status** — workflow workers (one per route) and their source queues
 
 **Metrics emitter (`logpose/metrics/emitter.py`)**
 
-`MetricsEmitter` is embedded in consumers, the router, and runbooks. It fires a small JSON event to `logpose.metrics` on every significant pipeline action. It is fully wrapped in `try/except` — if RabbitMQ is unavailable the metric is silently dropped and the main pipeline is never affected.
+`MetricsEmitter` is embedded in consumers, the router, and workflow workers. It fires a small JSON event to `logpose.metrics` on every significant pipeline action. It is fully wrapped in `try/except` — if RabbitMQ is unavailable the metric is silently dropped and the main pipeline is never affected.
 
 ### Running the Dashboard Locally
 
@@ -578,17 +587,21 @@ Namespace: logpose
 ├── Deployment: logpose-router
 │   └── command: python -m logpose.router_main
 │
-├── Deployment: logpose-runbook-cloudtrail
-│   └── command: python -m logpose.runbooks.cloud.aws.cloudtrail
+├── Deployment: logpose-worker-cloudtrail
+│   └── command: python -m logpose.workflows.worker_main
+│   └── env: LOGPOSE_ROUTE=cloud.aws.cloudtrail, N8N_WEBHOOK_URL=...
 │
-├── Deployment: logpose-runbook-guardduty
-│   └── command: python -m logpose.runbooks.cloud.aws.guardduty
+├── Deployment: logpose-worker-guardduty
+│   └── command: python -m logpose.workflows.worker_main
+│   └── env: LOGPOSE_ROUTE=cloud.aws.guardduty, N8N_WEBHOOK_URL=...
 │
-├── Deployment: logpose-runbook-eks
-│   └── command: python -m logpose.runbooks.cloud.aws.eks
+├── Deployment: logpose-worker-eks
+│   └── command: python -m logpose.workflows.worker_main
+│   └── env: LOGPOSE_ROUTE=cloud.aws.eks, N8N_WEBHOOK_URL=...
 │
-├── Deployment: logpose-runbook-gcp-event-audit
-│   └── command: python -m logpose.runbooks.cloud.gcp.event_audit
+├── Deployment: logpose-worker-gcp-event-audit
+│   └── command: python -m logpose.workflows.worker_main
+│   └── env: LOGPOSE_ROUTE=cloud.gcp.event_audit, N8N_WEBHOOK_URL=...
 │
 ├── Deployment: logpose-forwarder
 │   └── command: python -m logpose.forwarder_main
@@ -613,9 +626,9 @@ oc create secret generic logpose-splunk \
   --from-literal=SPLUNK_HEC_URL=https://splunk:8088/services/collector \
   --from-literal=SPLUNK_HEC_TOKEN=your-token
 
-oc create secret generic logpose-aws \
-  --from-literal=AWS_ACCESS_KEY_ID=... \
-  --from-literal=AWS_SECRET_ACCESS_KEY=...
+oc create secret generic logpose-n8n \
+  --from-literal=N8N_AUTH_HEADER_NAME=Authorization \
+  --from-literal=N8N_AUTH_HEADER_VALUE="Bearer your-n8n-token"
 ```
 
 Reference secrets in your Deployment specs via `envFrom.secretRef` — never bake credentials into container images.
@@ -636,26 +649,23 @@ LogPose/
 │   │   └── universal_consumer.py   # Universal HTTP POST /ingest consumer
 │   │
 │   ├── models/                      # Shared data models (Pydantic v2)
-│   │   ├── alert.py                 # Alert — normalized ingestion output
-│   │   └── enriched_alert.py        # EnrichedAlert — runbook output
+│   │   ├── alert.py                 # Alert — normalized ingestion output (+ udm)
+│   │   ├── udm.py                   # UdmEvent — Chronicle-style Unified Data Model
+│   │   └── enriched_alert.py        # EnrichedAlert — workflow output
 │   │
-│   ├── enrichers/                   # Enricher pipeline infrastructure
-│   │   ├── protocol.py              # Enricher protocol (structural subtyping)
-│   │   ├── context.py               # EnricherContext — per-alert pipeline state
-│   │   ├── principal.py             # Principal identity + AWS/GCP/AD normalizers
-│   │   ├── cache.py                 # PrincipalCache ABC + InProcessTTLCache
-│   │   ├── runner.py                # EnricherPipeline async runner (stages + timeouts)
-│   │   └── cloud/
-│   │       └── aws/
-│   │           └── cloudtrail/      # Concrete CloudTrail enrichers
-│   │               ├── schema.py    # CloudTrailEnrichment Pydantic schema
-│   │               ├── principal_identity.py
-│   │               ├── principal_history.py
-│   │               ├── write_filter.py
-│   │               └── object_inspection.py
+│   ├── udm/                         # UDM normalization (router-side)
+│   │   ├── identity.py              # Principal identity + AWS/GCP/AD normalizers
+│   │   ├── normalize.py             # normalize_alert() dispatcher (fail-open)
+│   │   └── mappers/                 # Per-route raw_payload -> UdmEvent mappers
+│   │       ├── aws_cloudtrail.py
+│   │       ├── aws_guardduty.py
+│   │       ├── aws_eks.py
+│   │       ├── gcp_event_audit.py
+│   │       └── generic.py           # GENERIC_EVENT fallback
 │   │
 │   ├── queue/                       # RabbitMQ abstraction layer
 │   │   ├── queues.py                # Queue name constants (single source of truth)
+│   │   ├── dlq.py                   # Shared DLQ wrapper message builder
 │   │   ├── rabbitmq.py              # RabbitMQPublisher
 │   │   └── rabbitmq_consumer.py     # RabbitMQConsumer
 │   │
@@ -672,15 +682,10 @@ LogPose/
 │   │           └── gcp/
 │   │               └── event_audit.py
 │   │
-│   ├── runbooks/                    # Phase II: Per-pod data enrichment
-│   │   ├── base.py                  # BaseRunbook (abstract)
-│   │   └── cloud/
-│   │       ├── aws/
-│   │       │   ├── cloudtrail.py    # CloudTrailRunbook — orchestrator over enricher pipeline
-│   │       │   └── __main__.py
-│   │       └── gcp/
-│   │           ├── event_audit.py   # GcpEventAuditRunbook
-│   │           └── __main__.py
+│   ├── workflows/                   # Phase II: N8N workflow execution (per pod)
+│   │   ├── n8n_client.py            # N8NWorkflowClient — webhook POST w/ retries
+│   │   ├── worker.py                # WorkflowWorker — queue -> N8N -> enriched
+│   │   └── worker_main.py           # Entry point (LOGPOSE_ROUTE + N8N_WEBHOOK_URL)
 │   │
 │   ├── forwarder/                   # Phase III: Splunk forwarding
 │   │   ├── splunk_client.py         # SplunkHECClient (batched, retrying)
@@ -696,7 +701,7 @@ LogPose/
 │   │   ├── metrics_consumer.py      # Background thread draining logpose.metrics queue
 │   │   ├── metrics_store.py         # Thread-safe SQLite-backed counter store
 │   │   ├── rabbitmq_api.py          # RabbitMQ Management API HTTP client
-│   │   └── routes_reader.py         # Reads RouteRegistry + discovers runbook classes
+│   │   └── routes_reader.py         # Reads RouteRegistry -> routes/workflows APIs
 │   │
 │   ├── router_main.py               # Entry point: Router pod
 │   ├── forwarder_main.py            # Entry point: Forwarder pod
@@ -711,17 +716,20 @@ LogPose/
 │   │   └── logpose-dashboard-guide.md
 │   ├── web-ui/                      # RabbitMQ Management UI guide
 │   │   └── rabbitmq-management-ui.md
+│   ├── workflows/                   # N8N execution layer guide
+│   ├── udm/                         # UDM normalization guide
+│   ├── refactor/                    # Design records (runbooks → N8N + UDM)
 │   └── tests/                       # Testing walkthroughs for every component
 │       ├── consumers/
 │       ├── queue/
 │       ├── routing/
 │       ├── models/
-│       ├── runbooks/
 │       ├── forwarder/               # Phase III forwarder walkthroughs
 │       └── integration/             # Integration test walkthroughs
 │
 ├── docker/
-│   └── docker-compose.yml           # Full local dev stack
+│   ├── docker-compose.yml           # Full local dev stack
+│   └── n8n_workflow_mock.py         # N8N webhook stand-in for the demo stack
 │
 ├── Dockerfile                       # Production container image
 ├── pyproject.toml                   # Project metadata + tool configuration
@@ -743,9 +751,29 @@ class Alert(BaseModel):
     received_at: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
     raw_payload: dict[str, Any]     # Original event — untouched
     metadata: dict[str, Any] = Field(default_factory=dict)
+    udm: UdmEvent | None = None     # Attached by the Router after route matching
 
     model_config = {"frozen": True}
 ```
+
+### `UdmEvent` (Unified Data Model)
+
+A pragmatic subset of [Google Chronicle's UDM](https://cloud.google.com/chronicle/docs/event-processing/udm-overview), attached to every routed alert. The raw payload is always preserved alongside — UDM is a normalized *view*, never a replacement.
+
+```python
+class UdmEvent(BaseModel):
+    metadata: UdmMetadata            # event_type, timestamps, vendor/product, description
+    principal: UdmNoun | None        # the actor (user + cloud account/project)
+    target: UdmNoun | None           # what was acted upon (resource)
+    src: UdmNoun | None              # where the action came from (IP/hostname)
+    observer: UdmNoun | None
+    about: list[UdmNoun]
+    network: UdmNetwork | None       # protocol / HTTP details
+    security_result: list[UdmSecurityResult]  # severity, verdicts, actions
+    additional: dict[str, str]       # escape hatch for unmapped fields
+```
+
+`metadata.event_type` uses Chronicle's enum values (`USER_LOGIN`, `RESOURCE_CREATION`, `RESOURCE_DELETION`, `RESOURCE_READ`, `RESOURCE_PERMISSIONS_CHANGE`, `SCAN_UNCATEGORIZED`, `NETWORK_CONNECTION`, `GENERIC_EVENT`, ...). Each route has a mapper in `logpose/udm/mappers/`; unmapped routes fall back to a `GENERIC_EVENT` mapping, and a mapper failure never blocks routing.
 
 **Kafka metadata:** `topic`, `partition`, `offset`, `key`  
 **SQS metadata:** `receipt_handle`, `message_id`, `attributes`  
@@ -753,16 +781,33 @@ class Alert(BaseModel):
 
 ### `EnrichedAlert`
 
-Produced by a runbook after processing an `Alert`. The original `Alert` is preserved intact.
+Produced by a workflow worker from the N8N workflow's response. The original `Alert` (including its UDM section) is preserved intact.
 
 ```python
 class EnrichedAlert(BaseModel, frozen=True):
-    alert: Alert                    # Original alert, unchanged
-    runbook: str                    # e.g., "cloud.aws.cloudtrail"
+    alert: Alert                    # Original alert (workflow may replace alert.udm)
+    workflow: str                   # e.g., "cloud.aws.cloudtrail"
     enriched_at: datetime           # UTC timestamp
-    extracted: dict[str, Any]       # Structured fields extracted from raw_payload
-    runbook_error: str | None       # Set if extraction failed — never None-suppressed
+    extracted: dict[str, Any]       # The workflow's extracted/enriched fields
+    workflow_error: str | None      # Set when the workflow reports a handled error
+    destination: str                # "splunk" (default) or "universal"
 ```
+
+**N8N response contract** — a workflow's "Respond to Webhook" node returns a JSON object:
+
+```json
+{
+  "extracted": { "user": "alice", "verdict": "suspicious" },
+  "udm":       { "metadata": { "event_type": "USER_LOGIN" } },
+  "destination": "splunk",
+  "error": null
+}
+```
+
+- `extracted` (optional) — becomes `EnrichedAlert.extracted`; when omitted, the entire response object is used.
+- `udm` (optional) — validated as `UdmEvent` and, when valid, replaces the alert's UDM section.
+- `destination` (optional) — `"splunk"` (default) or `"universal"`.
+- Invocation failures (timeouts, 5xx after retries, 4xx) send the alert to `alerts.dlq` with `dlq_reason="workflow_failed"`.
 
 **Immutability is intentional.** Both models are `frozen=True`. Once created, they cannot be mutated as they flow through the pipeline.
 
@@ -778,7 +823,7 @@ Routes are pure-function matchers. Adding a new route is a three-step process:
 # logpose/routing/routes/cloud/aws/securityhub.py
 
 from logpose.routing.registry import RouteRegistry
-from logpose.queue.queues import Queues
+from logpose.queue.queues import QUEUE_WORKFLOW_SECURITYHUB
 
 def _matches_securityhub(payload: dict) -> bool:
     """Matches AWS Security Hub findings."""
@@ -790,7 +835,7 @@ def _matches_securityhub(payload: dict) -> bool:
 
 RouteRegistry.register(
     name="cloud.aws.securityhub",
-    queue=Queues.RUNBOOK_SECURITYHUB,     # add this constant to queues.py
+    queue=QUEUE_WORKFLOW_SECURITYHUB,     # add this constant to queues.py
     matcher=_matches_securityhub,
     description="AWS Security Hub findings via EventBridge",
 )
@@ -801,9 +846,7 @@ RouteRegistry.register(
 ```python
 # logpose/queue/queues.py
 
-class Queues:
-    ...
-    RUNBOOK_SECURITYHUB = "runbook.securityhub"   # add this line
+QUEUE_WORKFLOW_SECURITYHUB: str = "workflow.securityhub"   # add this line
 ```
 
 ### Step 3 — Register the import
@@ -814,63 +857,44 @@ class Queues:
 from . import cloudtrail, guardduty, eks, securityhub   # add securityhub
 ```
 
-That is all that is needed. The next time the Router starts, it will route matching alerts to `runbook.securityhub`.
+That is all that is needed. The next time the Router starts, it will route matching alerts to `workflow.securityhub`. To give the new route a UDM mapping, add a mapper module under `logpose/udm/mappers/` and register it in `logpose/udm/normalize.py` — routes without a mapper fall back to `GENERIC_EVENT`.
 
 ---
 
-## Adding a New Runbook
+## Adding a New Workflow
 
-### Step 1 — Create the runbook class
+Enrichment logic lives in N8N, not in this codebase — adding a workflow is mostly an N8N exercise:
 
-```python
-# logpose/runbooks/cloud/aws/securityhub.py
+### Step 1 — Build the N8N workflow
 
-from logpose.runbooks.base import BaseRunbook
-from logpose.models.alert import Alert
-from logpose.models.enriched_alert import EnrichedAlert
-from logpose.queue.queues import Queues
+Create a workflow triggered by a **Webhook** node (POST). It receives the full
+`Alert` JSON — including the `udm` section — enriches it however you like
+(HTTP lookups, threat intel, LLM triage, ...), and ends with a
+**Respond to Webhook** node returning the response contract shown in
+[Data Models](#data-models).
 
+### Step 2 — Deploy a worker pod for the route
 
-class SecurityHubRunbook(BaseRunbook):
-    source_queue = Queues.RUNBOOK_SECURITYHUB
-    runbook_name = "cloud.aws.securityhub"
+Same image, same entry point — only environment differs:
 
-    def enrich(self, alert: Alert) -> EnrichedAlert:
-        payload = alert.raw_payload
-        try:
-            findings = payload["detail"]["findings"]
-            first = findings[0] if findings else {}
-            extracted = {
-                "severity": first.get("Severity", {}).get("Label"),
-                "title": first.get("Title"),
-                "resource_type": first.get("Resources", [{}])[0].get("Type"),
-                "finding_count": len(findings),
-            }
-        except Exception as exc:
-            return EnrichedAlert.from_error(alert, self.runbook_name, str(exc))
-
-        return EnrichedAlert.from_alert(alert, self.runbook_name, extracted)
+```yaml
+command: ["python", "-m", "logpose.workflows.worker_main"]
+env:
+  - name: LOGPOSE_ROUTE
+    value: cloud.aws.securityhub
+  - name: N8N_WEBHOOK_URL
+    value: https://n8n.example.com/webhook/securityhub
+  # optional: N8N_AUTH_HEADER_NAME / N8N_AUTH_HEADER_VALUE (from a Secret),
+  # N8N_TIMEOUT_SECONDS (30), N8N_MAX_ATTEMPTS (3), N8N_RETRY_BACKOFF_SECONDS (2)
 ```
 
-### Step 2 — Add a `__main__.py` entry point
+### Step 3 — Verify end-to-end
 
-```python
-# logpose/runbooks/cloud/aws/__main__securityhub.py
-# or logpose/runbooks/cloud/aws/securityhub/__main__.py
-
-from logpose.runbooks.cloud.aws.securityhub import SecurityHubRunbook
-
-if __name__ == "__main__":
-    SecurityHubRunbook().run()
-```
-
-### Step 3 — Write tests and deploy
-
-Add unit tests in `tests/unit/test_securityhub_runbook.py`, then deploy the pod with:
-
-```
-command: python -m logpose.runbooks.cloud.aws.securityhub
-```
+Publish a matching payload to the `alerts` queue (or use the universal
+consumer's `POST /ingest`) and watch it flow:
+router → `workflow.securityhub` → your worker → N8N → `enriched` → Splunk.
+Failures land in `alerts.dlq` with `dlq_reason="workflow_failed"` and are
+visible in the dashboard.
 
 ---
 
@@ -940,11 +964,10 @@ black logpose/ tests/
 | Consumers | 3 | SQS SNS envelope unwrapping, Splunk ES polling, universal HTTP ingest |
 | RabbitMQ | 3 | Publish/consume, acking/nacking, connection retries, Management API client |
 | Routing | 3 | Registry matching, router dispatch, DLQ behavior, all matchers |
-| Runbooks | 3 | Field extraction, graceful error handling, CloudTrail enricher metrics |
-| Enrichers | 7 | Principal normalization, cache TTL/LRU/eviction, async pipeline runner, four CloudTrail enrichers (moto-backed) |
+| Workflows | 3 | N8N client retries/auth, worker response contract + DLQ paths, UDM mappers/models |
 | Splunk Forwarder | 4 | HEC batching, retry on 429/5xx, DLQ forwarding, enriched forwarding, universal client |
 | Dashboard | 1 | MetricsStore thread safety and SQLite persistence |
-| Integration | 7 | End-to-end flows for Kafka, SQS, Pub/Sub, routing pipeline, CloudTrail enricher pipeline, and universal ingest |
+| Integration | 7 | End-to-end flows for Kafka, SQS, Pub/Sub, routing + workflow pipeline, Splunk forwarding, and universal ingest |
 
 ### Documentation
 
@@ -954,13 +977,10 @@ The `docs/` directory contains component overviews and in-depth testing walkthro
 - [LogPose Dashboard Guide](docs/dashboard/logpose-dashboard-guide.md) — FastAPI backend + browser UI at :8080
 - [RabbitMQ Management UI Guide](docs/web-ui/rabbitmq-management-ui.md) — Queue monitoring UI at :15672
 
-**Enrichers**
-- [Enrichers Overview](docs/enrichers/README.md) — pipeline architecture, `Enricher` protocol, `EnricherContext`, principal cache, async runner, and all CloudTrail enrichers
-- [Principal Normalizers Walkthrough](docs/tests/enrichers/principal-testing-walkthrough.md)
-- [Cache Walkthrough](docs/tests/enrichers/cache-testing-walkthrough.md)
-- [Pipeline Runner Walkthrough](docs/tests/enrichers/runner-testing-walkthrough.md)
-- [CloudTrail Enrichers Walkthrough](docs/tests/enrichers/cloudtrail-enrichers-testing-walkthrough.md) — moto-backed tests for all four enrichers
-- [Enricher Metrics Walkthrough](docs/tests/enrichers/metrics-testing-walkthrough.md)
+**Workflows & UDM (Phase II enrichment)**
+- [Workflows Overview](docs/workflows/README.md) — N8N execution layer: client, worker, response contract, failure semantics
+- [UDM Overview](docs/udm/README.md) — Unified Data Model normalization: mappers, dispatcher, adding a mapper
+- [Refactor Plan](docs/refactor/n8n-udm-refactor-plan.md) — design record for the runbooks → N8N + UDM migration
 
 **Consumers**
 - [Kafka Consumer Walkthrough](docs/tests/consumers/kafka-testing-walkthrough.md)
@@ -978,11 +998,6 @@ The `docs/` directory contains component overviews and in-depth testing walkthro
 **Models**
 - [EnrichedAlert Model Walkthrough](docs/tests/models/enriched-alert-testing-walkthrough.md)
 
-**Runbooks**
-- [CloudTrail Runbook Walkthrough](docs/tests/runbooks/cloudtrail-runbook-testing-walkthrough.md)
-- [GCP Event Audit Runbook Walkthrough](docs/tests/runbooks/gcp-event-audit-runbook-testing-walkthrough.md)
-- [Test Runbook Walkthrough](docs/tests/runbooks/test-runbook-testing-walkthrough.md)
-
 **Splunk Forwarder (Phase III)**
 - [SplunkHECClient Walkthrough](docs/tests/forwarder/splunk-client-testing-walkthrough.md)
 - [EnrichedAlertForwarder Walkthrough](docs/tests/forwarder/enriched-forwarder-testing-walkthrough.md)
@@ -995,7 +1010,7 @@ The `docs/` directory contains component overviews and in-depth testing walkthro
 
 1. **Start in plan mode** — think before you build. For any non-trivial change, write out your approach before touching code.
 
-2. **Make changes** — keep functions small and focused. New routes and runbooks should be easy for a junior developer to read.
+2. **Make changes** — keep functions small and focused. New routes and mappers should be easy for a junior developer to read.
 
 3. **Type check:**
    ```bash
@@ -1023,12 +1038,12 @@ The `docs/` directory contains component overviews and in-depth testing walkthro
 
 ## Contributing
 
-Contributions are welcome. LogPose is intentionally structured to be easy to extend — new ingestion sources, new routes, and new runbooks can all be added without touching the core pipeline.
+Contributions are welcome. LogPose is intentionally structured to be easy to extend — new ingestion sources, new routes, new UDM mappers, and new N8N workflows can all be added without touching the core pipeline.
 
 ### Good First Issues
 
 - Add a new route matcher (e.g., AWS Config, Azure Defender, Datadog alerts)
-- Add a new runbook with extraction logic and unit tests
+- Add a new UDM mapper (with unit tests) for a route that falls back to GENERIC_EVENT
 - Write a new ingestion consumer for a source not yet supported
 - Improve test coverage for edge cases in existing components
 - Add Helm charts or OpenShift operator manifests for deployment automation
@@ -1057,13 +1072,14 @@ Contributions are welcome. LogPose is intentionally structured to be easy to ext
 | Phase | Status | Description |
 |-------|--------|-------------|
 | **Phase I** | Complete | Multi-source alert ingestion (Kafka, SQS/SNS, Pub/Sub, Splunk ES, Universal HTTP) with durable RabbitMQ queuing |
-| **Phase II** | Complete | Matcher-based routing engine with pod-isolated runbooks (CloudTrail, GuardDuty, EKS, GCP Event Audit) |
+| **Phase II** | Complete | Matcher-based routing engine with UDM normalization and pod-isolated N8N workflow workers (CloudTrail, GuardDuty, EKS, GCP Event Audit) |
 | **Phase III** | Complete | Splunk HEC forwarding for enriched alerts and DLQ alerts; universal HTTP forwarder |
-| **Enricher Pipeline** | Complete | Composable async enricher pipeline for CloudTrail — principal identity, history, write-call filter, object inspection; LRU/TTL cache; per-enricher and total-budget timeouts; full observability metrics |
+| **UDM Normalization** | Complete | Chronicle-style Unified Data Model attached to every routed alert — per-route mappers with fail-open generic fallback |
+| **N8N Workflow Execution** | Complete | Per-route workflow worker pods delegating enrichment to N8N webhooks with retries, auth, and DLQ on failure |
 | **Phase IV** | Planned | Additional alert output destinations (e.g., PagerDuty, Slack, JIRA, webhook) |
-| **Phase V** | Planned | Runbook expansion — CrowdStrike, Microsoft Defender, AWS Security Hub, Azure Sentinel |
+| **Phase V** | Planned | Workflow expansion — CrowdStrike, Microsoft Defender, AWS Security Hub, Azure Sentinel |
 | **Phase VI** | Planned | Observability — metrics (Prometheus), structured logging, distributed tracing (OpenTelemetry) |
-| **Dashboard** | Complete | Real-time observability UI — queue depths, pipeline counters, route registry, runbook status (FastAPI + browser at :8080) |
+| **Dashboard** | Complete | Real-time observability UI — queue depths, pipeline counters, route registry, workflow status (FastAPI + browser at :8080) |
 
 ---
 
@@ -1077,6 +1093,6 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 Built with purpose for the security engineering community.
 
-*If LogPose saves you time, consider contributing a runbook back.*
+*If LogPose saves you time, consider contributing a workflow or UDM mapper back.*
 
 </div>

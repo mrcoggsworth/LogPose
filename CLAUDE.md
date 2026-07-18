@@ -6,38 +6,58 @@ This file provides project-specific guidance for Claude Code. Update this file w
 
 The purpose of this project is to create a headless Security Orchestration Automation and Response platform utilizing modern infrastructure on OpenShift.
 
-### Phase I. 
-Create the ingestion stage. The soar platform will only be a consumer of kafka, aws sns, gcp pub/sub and possibly other related event driven notification systems that will send alerts into the soar-lite project (codename LogPose) for consumption. From here in phase 1 the platform will need to queue each alert into a self manageing queue that can live through pod failures or restarts. The queue system I would prefer to use is the Rebbit MQ system as the code seems to be more easily understandable over Redis and should perform at the level I am trying to achieve.
-- Items I want to achieve before moving on to phase 2
-  - Build out the ingestion side of the platform to intake from multiple subscription platforms
-    - kafka
-    - aws sns
-    - gcp pub/sub
-  - Be able to create a suitable test to see an incoming message and what it looks like and what possibilities are possible for creating a router solution in Phase 2.
-  - I would like to be able to run tests prior to phase 2 execution planning so I can visually understand what is happening as my prior knowledge stems from building out backend api's without a queueing system.
+## Current Architecture (authoritative — supersedes older phase wording)
 
-### Phase II.
-Create the routing stage of the project. Now that the ingestion part is done it is now time to route registered events in the queue that are consumed by different consumers (kafka, aws sqs, and gcp pub/sub) to the correct runbook as code. Each runbook as code will run as a separate pod so that it has segregation between different pieces of the headless soar project. This way if an error happens it can report it back to the router section which can then either reprocess the event or send it potentially to a dlq to process it later. Use rabbitmq to send to a dlq like area if possible. Once the data is enriched by the runbook it will need to send it back from the pod it was run in back to the routing infrastructure so that it can be sent out to its proper logging destination. We will stop there though as that will be apart of Phase IV. and we are chunking the project into separate phases.
-- Items I want to achieve before moving on to phase 2
-  - routing from rabbitmq queued events to proper runbooks
-    - routes can have a parent route with sub routes
-      - example: parent route could be "cloud" and a child route could be "aws" or "gcp" and each child route can be different runbooks
-      - example: parent route could be "crowdstrike" and a child route could be "malware execution" or "confirmed downloaded malicious file"
-      - these are not specific routes currently but could be in the future
-  - routing code needs to be modular so that you can easily add more routes in the future for more use cases
-  - routing needs to be simple enough for a junior developer to understand but sophisticated enough to handle efficient route handling and saftey to not send events to the incorrect location.
-  - include a test route in the initial phase II to be able to use for tests as well as an operational example.
-  - build out routes for cloud that lead to aws and gcp then route again to the logging type.
-    - cloud -> aws -> cloudtrail
-    - cloud -> aws -> guardduty
-    - cloud -> aws -> eks (kubernetes)
-    - cloud -> gcp -> event_audit
-  - at least one very small test aws cloudtrail runbook and one very small gcp runbook to use as tests. Additional code for data enrichment will be added later.
+```
+Consumers (Kafka / SQS+SNS / Pub/Sub / Splunk ES / Universal HTTP)
+  → Alert{raw_payload, udm=None} → [alerts] queue (RabbitMQ, durable)
+  → Router: match route (pure-function matchers on raw_payload)
+            + attach UDM view (logpose/udm/ mappers, chosen by route)
+  → [workflow.<route>] queue
+  → WorkflowWorker pod (one per route; logpose/workflows/worker_main.py,
+    configured via LOGPOSE_ROUTE + N8N_WEBHOOK_URL)
+  → HTTP POST to the route's N8N webhook workflow (enrichment lives in N8N,
+    NOT in this repository) → JSON response per the contract in
+    docs/workflows/README.md
+  → EnrichedAlert → [enriched] queue → Forwarders → Splunk HEC
+Failures at any stage → [alerts.dlq] (reasons: no_route_matched,
+publish_failed, workflow_failed, workflow_bad_response) → also forwarded
+to Splunk. Nothing is silently dropped.
+```
 
-### Phase III.
-Now that we have an eriched data alert and we send it back to the main base, its time to ship out the enriched alert to a splunk index that ingests all the alerts for review.
-- if the alert is enriched or not it needs to be able to forward to splunk
-- the splunk event should be sent via the splunk sdk using industry best practices when it comes to sending the alerts.
+Key facts every session should know:
+- **Runbooks and the in-repo enricher pipeline were removed** (PR #2). Do not
+  recreate `logpose/runbooks/` or `logpose/enrichers/` — enrichment belongs in
+  N8N workflows. The old CloudTrail enricher logic is recoverable from git
+  history if it ever needs to be ported into N8N.
+- **UDM**: every routed alert carries a Google Chronicle-style Unified Data
+  Model view (`Alert.udm`, models in `logpose/models/udm.py`, per-route
+  mappers in `logpose/udm/mappers/`, fail-open dispatcher in
+  `logpose/udm/normalize.py`). `raw_payload` is always preserved untouched
+  alongside the UDM view.
+- Queue names live only in `logpose/queue/queues.py` (`workflow.*`, not the
+  retired `runbook.*`). The shared DLQ wrapper builder is
+  `logpose/queue/dlq.py`.
+- Design records: `docs/refactor/n8n-udm-refactor-plan.md` (rationale and
+  contracts) and `docs/refactor/post-refactor-todo.md` (remaining follow-ups).
+
+### Phase I — Ingestion (complete)
+Create the ingestion stage. The soar platform is a consumer of kafka, aws sns, gcp pub/sub and other related event driven notification systems that send alerts into the soar-lite project (codename LogPose) for consumption. Each alert is queued into RabbitMQ (durable queues that live through pod failures or restarts).
+- Achieved:
+  - Ingestion from multiple subscription platforms: kafka, aws sns/sqs, gcp pub/sub, splunk es, universal http
+  - All consumers normalize into the shared `Alert` model and publish to the `alerts` queue
+
+### Phase II — Routing + UDM + N8N Workflows (complete; replaced the original "runbook as code" design)
+Route registered events from the queue to the correct **N8N workflow**. The original plan ran enrichment as in-repo "runbook as code" pods; that design was retired in PR #2. Instead, each route has a dedicated **workflow worker pod** — same image, same entry point (`python -m logpose.workflows.worker_main`), differentiated only by `LOGPOSE_ROUTE` and `N8N_WEBHOOK_URL` env vars — preserving the per-route pod segregation goal. The worker POSTs the UDM-shaped alert to the route's N8N webhook and publishes the JSON response to the `enriched` queue. Errors are reported back via the DLQ (RabbitMQ `alerts.dlq`) so events can be reviewed and replayed later.
+- Achieved:
+  - Modular parent/child routing (`cloud.aws.cloudtrail`, `cloud.aws.guardduty`, `cloud.aws.eks`, `cloud.gcp.event_audit`) plus a `test` smoke-test route
+  - Routing simple enough for a junior developer (pure-function matchers, first match wins, fail-safe to DLQ) yet safe against misrouting
+  - UDM normalization in the router: after matching, the route's mapper builds `Alert.udm` (metadata/event_type, principal, target, src, security_result) — modeled on Google Chronicle's UDM
+  - One-pod-per-route N8N workflow workers with retry/backoff, optional webhook auth header, and DLQ on failure
+  - Local N8N stand-in for dev/demo: `docker/n8n_workflow_mock.py`
+
+### Phase III — Splunk Forwarding (complete)
+Enriched or not, every alert forwards to Splunk: `EnrichedAlert`s from the `enriched` queue and DLQ wrappers from `alerts.dlq` both ship to Splunk HEC (sourcetypes `logpose:enriched_alert` / `logpose:dlq_alert`), with a universal HTTP forwarder option when a workflow responds with `destination: "universal"`.
 
 
 <!-- Expand more on the project and prompt claude only to build in sections -->
@@ -106,10 +126,19 @@ Keep iterating until the mistake rate measurably drops.
 - Don't skip error handling
 - Don't commit without running tests first
 - Don't make breaking API changes without discussion
+- Don't add enrichment logic to this repo — enrichment belongs in N8N workflows (the worker in `logpose/workflows/` only transports alerts to/from N8N)
+- Don't recreate `logpose/runbooks/` or `logpose/enrichers/` — retired in PR #2
+- Don't rename existing UDM fields, `EventType` enum values, or queue name constants — N8N workflows and Splunk searches depend on those shapes
 
 ## Project-Specific Patterns
 
 <!-- Add patterns as they emerge from your codebase -->
+
+- Queue names are constants in `logpose/queue/queues.py` only — never bare string literals elsewhere
+- All pipeline models (`Alert`, `UdmEvent`, `EnrichedAlert`) are frozen Pydantic v2 models; transformations use `model_copy(update={...})`, never mutation
+- UDM mappers may raise freely on malformed payloads — the `normalize_alert()` dispatcher is the fail-open layer (falls back to the generic mapper); don't write defensive mappers
+- DLQ messages always use `logpose/queue/dlq.py:build_dlq_message()` so the wrapper schema stays uniform for the DLQ forwarder
+- The N8N request/response contract is documented in `docs/workflows/README.md` — treat it as an external API: additive changes only
 
 ---
 

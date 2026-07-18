@@ -1,6 +1,6 @@
 # Routing
 
-The `logpose.routing` package is the **central dispatch layer** of the LogPose SOAR platform. It reads `Alert` objects from the `alerts` RabbitMQ queue, determines which runbook should process each alert, and publishes the alert to the appropriate runbook queue. Alerts that match no route are sent to the dead-letter queue (`alerts.dlq`) so they are never silently dropped.
+The `logpose.routing` package is the **central dispatch layer** of the LogPose SOAR platform. It reads `Alert` objects from the `alerts` RabbitMQ queue, determines which route each alert belongs to, attaches that route's UDM view (see [Models](../models/README.md)), and publishes the alert to the route's workflow queue, where a per-route worker forwards it to an N8N workflow. Alerts that match no route are sent to the dead-letter queue (`alerts.dlq`) so they are never silently dropped.
 
 ---
 
@@ -37,7 +37,7 @@ The `logpose.routing` package is the **central dispatch layer** of the LogPose S
 │               │                                    │               │
 │               ▼                                    ▼               │
 │   RabbitMQPublisher.publish                 _publish_to_dlq        │
-│   → route.queue (e.g. runbook.cloudtrail)   → alerts.dlq           │
+│   → route.queue (e.g. workflow.cloudtrail)   → alerts.dlq           │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -99,7 +99,7 @@ A matcher is a plain Python function with signature `(raw_payload: dict[str, Any
 
 - **Must return `True` or `False`** — no exceptions, no side effects.
 - **Must never raise** — if the payload lacks an expected key, return `False`, not `KeyError`. Use `.get()` rather than `[]`.
-- **Should be specific** — a matcher that returns `True` for too many event types will send unrelated alerts to the wrong runbook. When in doubt, add more conditions rather than fewer.
+- **Should be specific** — a matcher that returns `True` for too many event types will send unrelated alerts to the wrong workflow. When in doubt, add more conditions rather than fewer.
 
 The `MatcherFn` type alias is `Callable[[dict[str, Any]], bool]`.
 
@@ -194,7 +194,7 @@ def matches(raw_payload):
 
 **Signal fields:** `eventSource` (ends with `.amazonaws.com`) + `eventVersion` present.
 
-**Destination queue:** `runbook.cloudtrail`
+**Destination queue:** `workflow.cloudtrail`
 
 ### cloud.aws.guardduty
 
@@ -215,7 +215,7 @@ def matches(raw_payload):
 
 **Signal fields:** `schemaVersion` present + `type` contains a `/` (e.g. `"UnauthorizedAccess:EC2/TorIPCaller"`).
 
-**Destination queue:** `runbook.guardduty`
+**Destination queue:** `workflow.guardduty`
 
 ### cloud.aws.eks
 
@@ -230,7 +230,7 @@ def matches(raw_payload):
 
 **Signal field:** `apiVersion` is exactly `"audit.k8s.io/v1"`.
 
-**Destination queue:** `runbook.eks`
+**Destination queue:** `workflow.eks`
 
 ### cloud.gcp.event_audit
 
@@ -250,7 +250,7 @@ def matches(raw_payload):
 
 **Signal field:** `protoPayload["@type"]` equals the GCP AuditLog proto URL.
 
-**Destination queue:** `runbook.gcp.event_audit`
+**Destination queue:** `workflow.gcp.event_audit`
 
 ### test
 
@@ -265,7 +265,7 @@ def matches(raw_payload):
 
 **Signal field:** `_logpose_test` is exactly `True` (not truthy — `is True` prevents matching `1`, `"yes"`, etc.).
 
-**Destination queue:** `runbook.test`
+**Destination queue:** `workflow.test`
 
 **Usage:**
 ```bash
@@ -284,7 +284,7 @@ Routes self-register when their module is imported. Each route file ends with:
 registry.register(
     Route(
         name="cloud.aws.cloudtrail",
-        queue=QUEUE_RUNBOOK_CLOUDTRAIL,
+        queue=QUEUE_WORKFLOW_CLOUDTRAIL,
         matcher=matches,
         description="AWS CloudTrail API activity and console login events",
     )
@@ -321,23 +321,23 @@ The DLQ forwarder (`logpose.forwarder.dlq_forwarder`) consumes from `alerts.dlq`
 2. **Write** a `matches(raw_payload: dict) -> bool` function that is specific, defensive (uses `.get()`), and never raises.
 3. **Register** the route at module level:
    ```python
-   from logpose.queue.queues import QUEUE_RUNBOOK_<NAME>
+   from logpose.queue.queues import QUEUE_WORKFLOW_<NAME>
    from logpose.routing.registry import Route, registry
 
    registry.register(Route(
        name="<parent>.<service>",
-       queue=QUEUE_RUNBOOK_<NAME>,
+       queue=QUEUE_WORKFLOW_<NAME>,
        matcher=matches,
        description="Human-readable description",
    ))
    ```
 4. **Add the queue constant** to `logpose/queue/queues.py`:
    ```python
-   QUEUE_RUNBOOK_<NAME>: str = "runbook.<name>"
+   QUEUE_WORKFLOW_<NAME>: str = "workflow.<name>"
    ```
-   And add it to `ALL_RUNBOOK_QUEUES`.
+   And add it to `ALL_WORKFLOW_QUEUES`.
 5. **Import the new module** in `logpose/routing/routes/__init__.py` (or the appropriate `__init__.py` up the chain).
-6. **Create the runbook** that consumes from the new queue. See [Runbooks documentation](../runbooks/README.md).
+6. **Deploy a workflow worker** for the new route (`LOGPOSE_ROUTE` + `N8N_WEBHOOK_URL`) and, optionally, a UDM mapper in `logpose/udm/mappers/`. See [Workflows documentation](../workflows/README.md) and [UDM documentation](../udm/README.md).
 
 ---
 

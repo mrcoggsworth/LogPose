@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from logpose.queue.queues import QUEUE_RUNBOOK_GUARDDUTY
+from logpose.queue.queues import QUEUE_WORKFLOW_GUARDDUTY
 from logpose.routing.registry import Route, registry
 
 
@@ -15,17 +15,13 @@ def matches(raw_payload: dict[str, Any]) -> bool:
     """
     schema_version = raw_payload.get("schemaVersion")
     finding_type = raw_payload.get("type")
-    return (
-        isinstance(schema_version, str)
-        and isinstance(finding_type, str)
-        and "/" in finding_type
-    )
+    return isinstance(schema_version, str) and isinstance(finding_type, str) and "/" in finding_type
 
 
 registry.register(
     Route(
         name="cloud.aws.guardduty",
-        queue=QUEUE_RUNBOOK_GUARDDUTY,
+        queue=QUEUE_WORKFLOW_GUARDDUTY,
         matcher=matches,
         description="AWS GuardDuty threat intelligence findings",
     )

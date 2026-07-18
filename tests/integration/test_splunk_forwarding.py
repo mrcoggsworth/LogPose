@@ -114,7 +114,7 @@ def test_enriched_alert_is_forwarded_to_splunk(
     alert = Alert(source="sqs", raw_payload=_CLOUDTRAIL_PAYLOAD)
     enriched = EnrichedAlert(
         alert=alert,
-        runbook="cloud.aws.cloudtrail",
+        workflow="cloud.aws.cloudtrail",
         extracted={"user": "alice", "event_name": "ConsoleLogin"},
     )
 
@@ -122,9 +122,7 @@ def test_enriched_alert_is_forwarded_to_splunk(
         exchange="",
         routing_key=QUEUE_ENRICHED,
         body=enriched.model_dump_json().encode(),
-        properties=pika.BasicProperties(
-            content_type="application/json", delivery_mode=2
-        ),
+        properties=pika.BasicProperties(content_type="application/json", delivery_mode=2),
     )
 
     splunk = _splunk_client()
@@ -155,7 +153,7 @@ def test_enriched_alert_is_forwarded_to_splunk(
     assert event["index"] == "logpose_alerts"
     assert event["event"]["alert"]["id"] == alert.id
     assert event["event"]["extracted"]["user"] == "alice"
-    assert event["event"]["runbook"] == "cloud.aws.cloudtrail"
+    assert event["event"]["workflow"] == "cloud.aws.cloudtrail"
 
 
 def test_dlq_alert_is_forwarded_to_splunk(
@@ -181,9 +179,7 @@ def test_dlq_alert_is_forwarded_to_splunk(
         exchange="",
         routing_key=QUEUE_DLQ,
         body=json.dumps(dlq_message).encode(),
-        properties=pika.BasicProperties(
-            content_type="application/json", delivery_mode=2
-        ),
+        properties=pika.BasicProperties(content_type="application/json", delivery_mode=2),
     )
 
     splunk = _splunk_client()
@@ -216,27 +212,25 @@ def test_dlq_alert_is_forwarded_to_splunk(
     assert event["event"]["alert"]["id"] == "dlq-integration-test-id"
 
 
-def test_enriched_alert_with_runbook_error_still_forwarded(
+def test_enriched_alert_with_workflow_error_still_forwarded(
     forwarding_channel: pika.adapters.blocking_connection.BlockingChannel,
 ) -> None:
-    """An EnrichedAlert produced by a failing runbook (runbook_error set)
+    """An EnrichedAlert produced by a failing workflow (workflow_error set)
     should still be forwarded to Splunk — partial enrichment is better than
     losing the alert entirely."""
     alert = Alert(source="pubsub", raw_payload={"data": "unexpected_format"})
     enriched = EnrichedAlert(
         alert=alert,
-        runbook="cloud.gcp.event_audit",
+        workflow="cloud.gcp.event_audit",
         extracted={},
-        runbook_error="KeyError: 'protoPayload'",
+        workflow_error="KeyError: 'protoPayload'",
     )
 
     forwarding_channel.basic_publish(
         exchange="",
         routing_key=QUEUE_ENRICHED,
         body=enriched.model_dump_json().encode(),
-        properties=pika.BasicProperties(
-            content_type="application/json", delivery_mode=2
-        ),
+        properties=pika.BasicProperties(content_type="application/json", delivery_mode=2),
     )
 
     splunk = _splunk_client()
@@ -262,5 +256,5 @@ def test_enriched_alert_with_runbook_error_still_forwarded(
 
     assert len(sent_events) == 1
     event = sent_events[0]
-    assert event["event"]["runbook_error"] == "KeyError: 'protoPayload'"
+    assert event["event"]["workflow_error"] == "KeyError: 'protoPayload'"
     assert event["event"]["alert"]["id"] == alert.id

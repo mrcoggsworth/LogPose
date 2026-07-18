@@ -1,6 +1,6 @@
 # LogPose Dashboard Guide
 
-The LogPose Dashboard is a real-time observability interface for the entire LogPose SOAR pipeline. It consists of two tightly coupled layers: a **FastAPI backend** that aggregates pipeline data from multiple sources, and a **browser-based frontend** served from that same backend at `http://localhost:8080`. Together they give operators and engineers a live view into queue health, alert volumes, route activity, runbook performance, and dead-letter queue counts — all without requiring access to RabbitMQ's own management interface or any external monitoring tool.
+The LogPose Dashboard is a real-time observability interface for the entire LogPose SOAR pipeline. It consists of two tightly coupled layers: a **FastAPI backend** that aggregates pipeline data from multiple sources, and a **browser-based frontend** served from that same backend at `http://localhost:8080`. Together they give operators and engineers a live view into queue health, alert volumes, route activity, workflow performance, and dead-letter queue counts — all without requiring access to RabbitMQ's own management interface or any external monitoring tool.
 
 This document covers both layers in full: what the dashboard is, how it works internally, how to run it, how to configure it, what each screen element means, and how to deploy it to OpenShift.
 
@@ -37,8 +37,8 @@ The dashboard is not a passive observer. It is an active participant in the pipe
 │  Router ───────────────────►  MetricsEmitter.emit("route_matched",…) │
 │                             │  MetricsEmitter.emit("dlq_enqueued",…) │
 │                             │                                        │
-│  Runbook pods ─────────────►  MetricsEmitter.emit("runbook_success",…│
-│                                MetricsEmitter.emit("runbook_error",…)│
+│  Worker pods ──────────────►  MetricsEmitter.emit("workflow_success",…│
+│                                MetricsEmitter.emit("workflow_error",…)│
 └─────────────────────────────────────────────────────────────────────-┘
                               │
                               ▼ (published to RabbitMQ)
@@ -70,7 +70,7 @@ The dashboard is not a passive observer. It is an active participant in the pipe
 │    ├─ GET /api/queues   → live queue data from RabbitMQ API         │
 │    ├─ GET /api/metrics  → accumulated pipeline counters             │
 │    ├─ GET /api/routes   → registered routes from RouteRegistry      │
-│    └─ GET /api/runbooks → discovered runbook classes                │
+│    └─ GET /api/workflows → workflow workers (one per route)         │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼ (browser polls every 10 seconds)
@@ -83,7 +83,7 @@ The dashboard is not a passive observer. It is an active participant in the pipe
 
 There are two distinct data sources feeding the dashboard:
 
-1. **Accumulated counters (MetricsStore)** — these count how many alerts have been processed, how many routes were matched, how many runbook errors occurred, etc. They are built up over time from the `logpose.metrics` queue and survive pod restarts via SQLite.
+1. **Accumulated counters (MetricsStore)** — these count how many alerts have been processed, how many routes were matched, how many workflow errors occurred, etc. They are built up over time from the `logpose.metrics` queue and survive pod restarts via SQLite.
 
 2. **Live queue data (RabbitMQApiClient)** — these show the current state of every RabbitMQ queue right now: how many messages are sitting in each queue, how fast messages are arriving, how many consumers are connected. This data is fetched fresh from the RabbitMQ Management API on every request to `/api/queues` or `/api/overview`.
 
@@ -95,7 +95,7 @@ Understanding the difference between these two sources is important: if you rest
 
 ### What is MetricsEmitter?
 
-`MetricsEmitter` (`logpose/metrics/emitter.py`) is a lightweight fire-and-forget publisher. It is embedded in every pipeline component — consumers, the router, and runbooks — and emits a small JSON event to the `logpose.metrics` RabbitMQ queue each time a significant pipeline action occurs.
+`MetricsEmitter` (`logpose/metrics/emitter.py`) is a lightweight fire-and-forget publisher. It is embedded in every pipeline component — consumers, the router, and workflow workers — and emits a small JSON event to the `logpose.metrics` RabbitMQ queue each time a significant pipeline action occurs.
 
 The key design principle is **non-interference**: `MetricsEmitter.emit()` is fully wrapped in a `try/except` and never raises. If RabbitMQ is unavailable, the metric event is silently dropped and a debug-level log is written. The main pipeline never slows down or fails because of metrics.
 
@@ -116,10 +116,10 @@ Messages are published with **delivery mode 1** (non-persistent/transient). This
 | Event name | Published by | `data` fields | Meaning |
 |-----------|-------------|---------------|---------|
 | `alert_ingested` | KafkaConsumer, SqsConsumer, PubSubConsumer | `{"source": "kafka"}` | One alert was received from an external source and published to the `alerts` queue |
-| `route_matched` | Router | `{"route": "cloud.aws.cloudtrail"}` | The Router matched an alert to a route and published it to the route's runbook queue |
+| `route_matched` | Router | `{"route": "cloud.aws.cloudtrail"}` | The Router matched an alert to a route and published it (with UDM attached) to the route's workflow queue |
 | `dlq_enqueued` | Router | `{"reason": "no_route_matched"}` | An alert could not be routed and was sent to `alerts.dlq` |
-| `runbook_success` | BaseRunbook | `{"runbook": "cloud.aws.cloudtrail"}` | A runbook successfully enriched an alert and published an `EnrichedAlert` to the `enriched` queue |
-| `runbook_error` | BaseRunbook | `{"runbook": "cloud.aws.cloudtrail", "error": "KeyError: ..."}` | A runbook raised an unexpected exception during enrichment |
+| `workflow_success` | WorkflowWorker | `{"workflow": "cloud.aws.cloudtrail"}` | A worker's N8N workflow responded successfully and an `EnrichedAlert` was published to the `enriched` queue |
+| `workflow_error` | WorkflowWorker | `{"workflow": "cloud.aws.cloudtrail", "reason": "workflow_failed"}` | An N8N invocation failed (after retries) and the alert went to the DLQ |
 
 ### What is MetricsConsumer?
 
@@ -137,8 +137,8 @@ It processes up to 50 messages at a time (`prefetch_count=50`) and dispatches ea
 |--------|------|---------|
 | `alert_ingested` | alert source name | `{"kafka": 412, "sqs": 88, "pubsub": 51}` |
 | `route_counts` | route name | `{"cloud.aws.cloudtrail": 290, "cloud.gcp.event_audit": 101}` |
-| `runbook_success` | runbook name | `{"cloud.aws.cloudtrail": 288}` |
-| `runbook_error` | runbook name | `{"cloud.aws.cloudtrail": 2}` |
+| `workflow_success` | workflow name | `{"cloud.aws.cloudtrail": 288}` |
+| `workflow_error` | workflow name | `{"cloud.aws.cloudtrail": 2}` |
 | `dlq_counts` | DLQ reason string | `{"no_route_matched": 7}` |
 
 All increment operations use a `threading.Lock` to prevent race conditions between the background MetricsConsumer thread and the API request threads.
@@ -200,8 +200,8 @@ Returns aggregated summary totals — the numbers shown in the stat cards at the
 | Field | Source | Description |
 |-------|--------|-------------|
 | `total_ingested` | MetricsStore | Sum of all `alert_ingested` counters across all sources |
-| `total_processed` | MetricsStore | Sum of all `runbook_success` counters across all runbooks |
-| `total_errors` | MetricsStore | Sum of all `runbook_error` counters across all runbooks |
+| `total_processed` | MetricsStore | Sum of all `workflow_success` counters across all workflows |
+| `total_errors` | MetricsStore | Sum of all `workflow_error` counters across all workflows |
 | `dlq_count` | RabbitMQ API (live) | Current depth of the `alerts.dlq` queue; falls back to the MetricsStore `dlq_counts` sum if the RabbitMQ API is unavailable |
 | `metrics_queue_depth` | RabbitMQ API (live) | Current depth of the `logpose.metrics` queue; useful for confirming the MetricsConsumer is keeping up |
 | `queue_count` | RabbitMQ API (live) | Total number of queues currently declared in the broker |
@@ -258,7 +258,7 @@ If the RabbitMQ Management API is unreachable (e.g., RabbitMQ is down), this end
 
 #### `GET /api/metrics`
 
-Returns all accumulated pipeline counters from MetricsStore. This is the raw counter data that the charts and runbook performance table are built from.
+Returns all accumulated pipeline counters from MetricsStore. This is the raw counter data that the charts and workflow performance table are built from.
 
 **Response example:**
 
@@ -276,14 +276,14 @@ Returns all accumulated pipeline counters from MetricsStore. This is the raw cou
     "cloud.aws.eks": 12,
     "test": 3
   },
-  "runbook_success": {
+  "workflow_success": {
     "cloud.aws.cloudtrail": 288,
     "cloud.gcp.event_audit": 99,
     "cloud.aws.guardduty": 97,
     "cloud.aws.eks": 12,
     "test": 3
   },
-  "runbook_error": {
+  "workflow_error": {
     "cloud.aws.cloudtrail": 2,
     "cloud.gcp.event_audit": 2
   },
@@ -309,17 +309,17 @@ The endpoint works by importing `logpose.routing.routes` (which triggers route r
 [
   {
     "name": "cloud.aws.cloudtrail",
-    "queue": "runbook.cloudtrail",
+    "queue": "workflow.cloudtrail",
     "description": "AWS CloudTrail events via S3 or EventBridge"
   },
   {
     "name": "cloud.gcp.event_audit",
-    "queue": "runbook.gcp.event_audit",
+    "queue": "workflow.gcp.event_audit",
     "description": "GCP Audit Log events via Pub/Sub"
   },
   {
     "name": "test",
-    "queue": "runbook.test",
+    "queue": "workflow.test",
     "description": "Smoke-test route (_logpose_test: true)"
   }
 ]
@@ -327,11 +327,9 @@ The endpoint works by importing `logpose.routing.routes` (which triggers route r
 
 ---
 
-#### `GET /api/runbooks`
+#### `GET /api/workflows`
 
-Returns the list of `BaseRunbook` subclasses discovered by walking the `logpose.runbooks` package. Like `/api/routes`, this is a **read-only reference** showing what runbook classes exist in the code.
-
-Discovery works by using `pkgutil.walk_packages` to import every module under `logpose.runbooks`, then using `inspect.getmembers` to find classes that subclass `BaseRunbook` and have both `source_queue` and `runbook_name` defined. No runbook instances are created — classes are only inspected.
+Returns the workflow-worker view of the pipeline: one entry per registered route, each with the route name and the queue its worker consumes from. Like `/api/routes`, this is a **read-only reference**. The N8N webhook URL is per-pod configuration (`N8N_WEBHOOK_URL`) and is intentionally not exposed here.
 
 **Response example:**
 
@@ -339,11 +337,11 @@ Discovery works by using `pkgutil.walk_packages` to import every module under `l
 [
   {
     "name": "cloud.aws.cloudtrail",
-    "source_queue": "runbook.cloudtrail"
+    "source_queue": "workflow.cloudtrail"
   },
   {
     "name": "cloud.gcp.event_audit",
-    "source_queue": "runbook.gcp.event_audit"
+    "source_queue": "workflow.gcp.event_audit"
   }
 ]
 ```
@@ -376,12 +374,12 @@ Five summary cards show at-a-glance pipeline health. These are populated from `/
 | Card | Color | Value source | What it means |
 |------|-------|-------------|---------------|
 | **Alerts Ingested** | Blue | `total_ingested` | Total number of alerts received from all sources since the SQLite file was created (or last reset) |
-| **Processed** | Green | `total_processed` | Total number of alerts successfully enriched by a runbook and published to the `enriched` queue |
-| **Errors** | Red | `total_errors` | Total number of runbook executions that raised an unexpected exception |
+| **Processed** | Green | `total_processed` | Total number of alerts successfully enriched by an N8N workflow and published to the `enriched` queue |
+| **Errors** | Red | `total_errors` | Total number of failed N8N workflow invocations |
 | **DLQ Messages** | Yellow | `dlq_count` (live queue depth) | How many messages are currently sitting in `alerts.dlq` — unrouted or failed alerts that need attention |
 | **Active Queues** | White | `queue_count` | Number of queues currently declared in the RabbitMQ broker |
 
-**Reading the cards together:** In a healthy pipeline, Alerts Ingested should be close to Processed + DLQ Messages. A growing DLQ count means alerts are arriving that have no matching route. A growing Errors count means a runbook is failing on certain payloads.
+**Reading the cards together:** In a healthy pipeline, Alerts Ingested should be close to Processed + DLQ Messages. A growing DLQ count means alerts are arriving that have no matching route. A growing Errors count means a workflow is failing on certain payloads (or N8N is unreachable).
 
 ### Section: Pipeline Activity (Charts)
 
@@ -406,9 +404,9 @@ A bar chart showing the current message depth of every queue in the broker. Data
 In normal pipeline operation, most queues should have a depth near zero — messages arrive and are consumed quickly. Sustained high depth on any queue indicates a problem:
 
 - High depth on `alerts` — the Router is not running or is falling behind
-- High depth on `runbook.*` — the corresponding runbook pod is not running or is falling behind
+- High depth on `workflow.*` — the corresponding worker pod is not running, or its N8N workflow is slow
 - High depth on `enriched` — the Splunk forwarder pod is not running
-- High depth on `alerts.dlq` — alerts are arriving with no matching route, or runbooks are failing
+- High depth on `alerts.dlq` — alerts are arriving with no matching route, or N8N invocations are failing
 
 #### Queue Details (Table)
 
@@ -423,20 +421,20 @@ A table showing detailed statistics for every queue, also from `/api/queues`.
 | **Pub/s** | Messages being published to this queue per second (current rate) |
 | **State** | Green badge = `running`; Yellow badge = any other state (e.g., `idle`, `flow`) |
 
-A `Consumers: 0` value on a runbook queue while messages are accumulating is the clearest signal that the runbook pod is down.
+A `Consumers: 0` value on a workflow queue while messages are accumulating is the clearest signal that the worker pod is down.
 
-### Section: Runbook Performance (Table)
+### Section: Workflow Performance (Table)
 
-A table built from the `runbook_success` and `runbook_error` counters in `/api/metrics`.
+A table built from the `workflow_success` and `workflow_error` counters in `/api/metrics`.
 
 | Column | Description |
 |--------|-------------|
-| **Runbook** | Runbook name (e.g., `cloud.aws.cloudtrail`) |
+| **Workflow** | Workflow name (e.g., `cloud.aws.cloudtrail`) |
 | **Successes** | Number of alerts successfully enriched |
-| **Errors** | Number of alerts where the runbook raised an unexpected exception |
+| **Errors** | Number of alerts whose N8N invocation failed and went to the DLQ |
 | **Error Rate** | `errors / (successes + errors)` as a percentage — green badge if 0%, red badge if >0% |
 
-An error rate above 0% means the runbook is encountering payloads it cannot parse. Check the runbook pod logs for the `runbook_error` log entries which include the exception detail.
+An error rate above 0% means the workflow is rejecting payloads or N8N is unhealthy. Check the worker pod logs for the `workflow_error` entries, which include the failure reason and HTTP detail.
 
 ### Section: Dead-Letter Queue (Table)
 
@@ -449,7 +447,7 @@ A table showing DLQ entry counts grouped by reason, from the `dlq_counts` counte
 
 Reasons are sorted by count descending — the most common reason appears first. If the table shows "No DLQ messages — all clear", no alerts have been DLQ'd since the counter baseline.
 
-The most common reason will be `no_route_matched`, which means an alert arrived whose `raw_payload` did not match any registered route matcher. This typically means a new alert type is arriving that has not yet had a route and runbook written for it.
+The most common reason will be `no_route_matched`, which means an alert arrived whose `raw_payload` did not match any registered route matcher. This typically means a new alert type is arriving that has not yet had a route and workflow written for it.
 
 ### Section: Reference — Read Only
 
@@ -465,14 +463,14 @@ Two reference tables showing the static configuration of the pipeline. These do 
 
 Use this table to verify that the routes you expect to be registered are actually loaded. If a route is missing here, the router does not know about it and alerts for that route will go to the DLQ.
 
-#### Available Runbooks Table
+#### Available Workflows Table
 
 | Column | Description |
 |--------|-------------|
-| **Name** | Runbook name (e.g., `cloud.aws.cloudtrail`) — shown in blue monospace |
-| **Source Queue** | The queue this runbook consumes from — shown in purple monospace |
+| **Name** | Workflow name (e.g., `cloud.aws.cloudtrail`) — shown in blue monospace |
+| **Source Queue** | The queue this workflow's worker consumes from — shown in purple monospace |
 
-Use this table to verify that runbook classes are discoverable by the code. A runbook missing from this list means its class either cannot be imported, does not subclass `BaseRunbook`, or is missing the `source_queue` / `runbook_name` class attributes.
+Use this table to verify every registered route has a workflow queue. An entry missing from this list means its route module is not imported in `logpose/routing/routes/__init__.py`.
 
 ---
 
@@ -523,8 +521,10 @@ To see the dashboard populate with real data, run some pipeline components in se
 # Terminal 1 — Router
 python -m logpose.router_main
 
-# Terminal 2 — A runbook
-python -m logpose.runbooks.cloud.aws.cloudtrail
+# Terminal 2 — A workflow worker
+LOGPOSE_ROUTE=cloud.aws.cloudtrail \
+N8N_WEBHOOK_URL=http://localhost:5678/webhook/cloudtrail \
+python -m logpose.workflows.worker_main
 ```
 
 Then publish a test alert (see the RabbitMQ Management UI guide for the exact command). Within 10 seconds the dashboard will show the updated counts.
@@ -742,7 +742,7 @@ Only the **counter totals** from MetricsStore are persisted to SQLite. The follo
 
 - Live queue depths (these are always fetched fresh from RabbitMQ)
 - The raw metric events from `logpose.metrics` (they are transient and consumed immediately)
-- Route or runbook definitions (these come from the code)
+- Route or workflow definitions (these come from the code)
 
 ### SQLite flush timing
 

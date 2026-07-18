@@ -91,7 +91,7 @@ class RabbitMQPublisher:
     ) -> None:
         """Publish raw bytes to an arbitrary queue with auto-reconnect.
 
-        Used by the Router and Runbooks (they publish to runbook/enriched/dlq
+        Used by the Router and workflow workers (they publish to workflow/enriched/dlq
         queues, not the canonical 'alerts' queue). Two-strike: if the
         channel/connection has gone stale (heartbeat timeout, broker
         restart, network blip), reconnect and retry once. Without this,
@@ -136,9 +136,7 @@ class RabbitMQPublisher:
                     )
                     self._reconnect()
                     continue
-                logger.error(
-                    "Failed to publish to queue=%s after retry: %s", queue, exc
-                )
+                logger.error("Failed to publish to queue=%s after retry: %s", queue, exc)
                 raise
             except pika.exceptions.AMQPError as exc:
                 logger.error("Failed to publish to queue=%s: %s", queue, exc)

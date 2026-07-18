@@ -9,7 +9,7 @@ This document covers how to test the `Router` and `RouteRegistry` at two levels:
 
 ## Background: Router, RouteRegistry, and the Dispatch Loop
 
-The `Router` is the central dispatcher for Phase II. It consumes from the `alerts` queue, matches each `Alert` to a registered route, and publishes the alert to that route's runbook queue. If no route matches — or if the publish call fails — the alert is sent to the dead-letter queue (`alerts.dlq`).
+The `Router` is the central dispatcher for Phase II. It consumes from the `alerts` queue, matches each `Alert` to a registered route, attaches the route's UDM view, and publishes the alert to that route's workflow queue. If no route matches — or if the publish call fails — the alert is sent to the dead-letter queue (`alerts.dlq`).
 
 ```
 alerts queue
@@ -19,7 +19,7 @@ alerts queue
       │
       ├── RouteRegistry.match(alert.raw_payload)
       │         │
-      │         ├── Route matched  ──→  publish to route.queue  (runbook.cloudtrail, etc.)
+      │         ├── Route matched  ──→  publish to route.queue  (workflow.cloudtrail, etc.)
       │         └── No match       ──→  publish to alerts.dlq
       │
       └── publish exception        ──→  publish to alerts.dlq  (reason: publish_failed)
@@ -41,7 +41,7 @@ DLQ message structure:
 }
 ```
 
-All messages — both runbook queues and DLQ — are published with `delivery_mode=2` (persistent), so they survive broker and pod restarts.
+All messages — both workflow queues and DLQ — are published with `delivery_mode=2` (persistent), so they survive broker and pod restarts.
 
 ---
 
@@ -111,14 +111,14 @@ The router logs its registered routes at startup then processes messages:
 
 ```
 Router started. Registered routes: ['cloud.aws.eks', 'cloud.aws.cloudtrail', 'cloud.aws.guardduty', 'cloud.gcp.event_audit', 'test']
-Routed alert <uuid> -> route='cloud.aws.cloudtrail' queue='runbook.cloudtrail'
+Routed alert <uuid> -> route='cloud.aws.cloudtrail' queue='workflow.cloudtrail'
 ```
 
 Press `Ctrl+C` to stop the router gracefully.
 
 ### Step 4: Inspect the routed message
 
-Navigate to **Queues → runbook.cloudtrail** in the RabbitMQ UI and use **Get messages**. The `alerts` queue should be empty; the alert JSON should now be in the `runbook.cloudtrail` queue.
+Navigate to **Queues → workflow.cloudtrail** in the RabbitMQ UI and use **Get messages**. The `alerts` queue should be empty; the alert JSON should now be in the `workflow.cloudtrail` queue.
 
 ### Step 5: Test the DLQ path
 
@@ -157,7 +157,7 @@ Expected output:
 PASSED test_cloudtrail_alert_routed_to_cloudtrail_queue
 PASSED test_unroutable_alert_goes_to_dlq
 PASSED test_test_route_alert_routed_to_test_queue
-PASSED test_cloudtrail_runbook_enriches_and_publishes_to_enriched_queue
+PASSED test_workflow_worker_invokes_n8n_and_publishes_to_enriched_queue
 ```
 
 ---
@@ -174,7 +174,7 @@ The Router's `_publisher` and `_consumer` are swapped out after construction:
 from unittest.mock import MagicMock
 from logpose.routing.registry import Route, RouteRegistry
 from logpose.routing.router import Router
-from logpose.queue.queues import QUEUE_RUNBOOK_CLOUDTRAIL
+from logpose.queue.queues import QUEUE_WORKFLOW_CLOUDTRAIL
 
 def _make_router(registry, publisher, consumer):
     router = Router(registry=registry, url="amqp://guest:guest@localhost:5672/")
@@ -192,7 +192,7 @@ mock_consumer = MagicMock()
 reg = RouteRegistry()
 reg.register(Route(
     name="cloud.aws.cloudtrail",
-    queue=QUEUE_RUNBOOK_CLOUDTRAIL,
+    queue=QUEUE_WORKFLOW_CLOUDTRAIL,
     matcher=lambda p: "eventSource" in p,
 ))
 
@@ -209,7 +209,7 @@ router._route_alert(alert)
 
 # Assert the channel published to the correct queue
 mock_channel.basic_publish.assert_called_once()
-assert mock_channel.basic_publish.call_args.kwargs["routing_key"] == QUEUE_RUNBOOK_CLOUDTRAIL
+assert mock_channel.basic_publish.call_args.kwargs["routing_key"] == QUEUE_WORKFLOW_CLOUDTRAIL
 ```
 
 ### The mock structure for RouteRegistry tests
@@ -247,7 +247,9 @@ pytest tests/unit/test_router.py tests/unit/test_route_registry.py -v
 | `test_router_publishes_to_dlq_on_no_match` | Alert with no matching route goes to `alerts.dlq` |
 | `test_router_dlq_payload_contains_dlq_reason` | DLQ message body contains `dlq_reason: "no_route_matched"` |
 | `test_router_dlq_payload_preserves_full_alert` | DLQ message body contains the original alert in full |
-| `test_router_publishes_to_dlq_on_publish_failure` | When publishing to a runbook queue raises, alert goes to DLQ with `dlq_reason: "publish_failed"` |
+| `test_router_publishes_to_dlq_on_publish_failure` | When publishing to a workflow queue raises, alert goes to DLQ with `dlq_reason: "publish_failed"` |
+| `test_router_attaches_udm_to_routed_alert` | Published alert carries a UDM section chosen by route name; raw_payload untouched |
+| `test_router_attaches_generic_udm_on_dlq` | Unrouted alerts get the generic UDM mapping before the DLQ |
 
 ### What each test covers — RouteRegistry
 
@@ -285,7 +287,7 @@ def test_new_route_alert_routed_to_new_queue(routing_channel):
     thread.start()
     thread.join(timeout=15)
 
-    routed = drain_rabbitmq_queue(routing_channel, queue="runbook.new_route")
+    routed = drain_rabbitmq_queue(routing_channel, queue="workflow.new_route")
     assert len(routed) == 1
     assert routed[0]["id"] == alert.id
 ```
@@ -300,9 +302,9 @@ def test_new_route_alert_routed_to_new_queue(routing_channel):
 | [`logpose/routing/registry.py`](../../../logpose/routing/registry.py) | RouteRegistry and Route dataclass — registration, matching |
 | [`logpose/routing/routes/__init__.py`](../../../logpose/routing/routes/__init__.py) | Route registration order — import triggers side-effect registration |
 | [`logpose/router_main.py`](../../../logpose/router_main.py) | Router pod entry point — `python -m logpose.router_main` |
-| [`logpose/queue/queues.py`](../../../logpose/queue/queues.py) | Queue name constants — `QUEUE_ALERTS`, `QUEUE_DLQ`, runbook queues |
-| [`tests/unit/test_router.py`](../../unit/test_router.py) | Router unit tests — all RabbitMQ mocked |
-| [`tests/unit/test_route_registry.py`](../../unit/test_route_registry.py) | RouteRegistry unit tests — registration, matching, ordering |
-| [`tests/integration/test_routing_flow.py`](../test_routing_flow.py) | End-to-end routing integration tests |
-| [`tests/integration/conftest.py`](../conftest.py) | `phase2_rabbitmq_channel` fixture, `purge_queues`, `drain_rabbitmq_queue` helpers |
+| [`logpose/queue/queues.py`](../../../logpose/queue/queues.py) | Queue name constants — `QUEUE_ALERTS`, `QUEUE_DLQ`, workflow queues |
+| [`tests/unit/test_router.py`](../../../tests/unit/test_router.py) | Router unit tests — all RabbitMQ mocked |
+| [`tests/unit/test_route_registry.py`](../../../tests/unit/test_route_registry.py) | RouteRegistry unit tests — registration, matching, ordering |
+| [`tests/integration/test_routing_flow.py`](../../../tests/integration/test_routing_flow.py) | End-to-end routing integration tests |
+| [`tests/integration/conftest.py`](../../../tests/integration/conftest.py) | `phase2_rabbitmq_channel` fixture, `purge_queues`, `drain_rabbitmq_queue` helpers |
 | [`docker/docker-compose.yml`](../../../docker/docker-compose.yml) | RabbitMQ service definition (port 5672, management UI port 15672) |

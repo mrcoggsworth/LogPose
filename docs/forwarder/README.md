@@ -96,7 +96,7 @@ with SplunkHECClient() as client:
     for enriched in alerts:
         event = client.build_event(
             event_data=json.loads(enriched.model_dump_json()),
-            source=enriched.runbook,
+            source=enriched.workflow,
             sourcetype="logpose:enriched_alert",
         )
         client.send(event)
@@ -125,7 +125,7 @@ client.flush()  # force immediate POST
 
 **File:** `logpose/forwarder/universal_client.py`
 
-A generic HTTP forwarder for when the destination is not Splunk. This is the client used when a runbook sets `destination = "universal"` on its class.
+A generic HTTP forwarder for when the destination is not Splunk. This is the client used when an N8N workflow returns `"destination": "universal"` in its response.
 
 ### Design
 
@@ -248,7 +248,9 @@ sourcetype=logpose:dlq_alert
 
 The two `dlq_reason` values currently in use:
 - `no_route_matched` — no route matcher returned `True` for the payload. Add or fix the route.
-- `publish_failed` — router matched a route but could not publish to the runbook queue. Investigate RabbitMQ connectivity.
+- `publish_failed` — router matched a route but could not publish to the workflow queue. Investigate RabbitMQ connectivity.
+- `workflow_failed` — the worker could not get a successful response from the route's N8N webhook (timeout, 5xx after retries, or 4xx). Investigate the N8N workflow and its URL/auth configuration.
+- `workflow_bad_response` — N8N returned 2xx but the body was not a JSON object. Fix the workflow's "Respond to Webhook" node.
 
 ---
 

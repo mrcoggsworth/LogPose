@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import importlib
-import inspect
 import logging
-import pkgutil
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -33,49 +30,18 @@ def get_routes() -> list[dict[str, Any]]:
         return []
 
 
-def get_runbooks() -> list[dict[str, Any]]:
-    """Discover BaseRunbook subclasses by walking the runbooks package.
+def get_workflows() -> list[dict[str, Any]]:
+    """Return the workflow view of the pipeline: one N8N workflow per route.
 
-    Returns a list of dicts with 'name' and 'source_queue' for each
-    concrete runbook found. No runbooks are instantiated — only imported.
+    Since enrichment moved to N8N, every registered route is served by a
+    workflow worker pod consuming that route's queue. The webhook URL is
+    per-pod configuration (N8N_WEBHOOK_URL), so it is not visible here —
+    only the route/queue pairing is.
     """
-    try:
-        import logpose.runbooks as runbooks_pkg
-        from logpose.runbooks.base import BaseRunbook
-
-        result: list[dict[str, Any]] = []
-        seen: set[str] = set()
-
-        for _importer, modname, ispkg in pkgutil.walk_packages(
-            path=runbooks_pkg.__path__,  # type: ignore[attr-defined]
-            prefix=runbooks_pkg.__name__ + ".",
-            onerror=lambda _x: None,
-        ):
-            if ispkg:
-                continue
-            try:
-                mod = importlib.import_module(modname)
-            except Exception as exc:
-                logger.debug("routes_reader: could not import %s: %s", modname, exc)
-                continue
-
-            for _name, obj in inspect.getmembers(mod, inspect.isclass):
-                if (
-                    obj is not BaseRunbook
-                    and issubclass(obj, BaseRunbook)
-                    and hasattr(obj, "source_queue")
-                    and hasattr(obj, "runbook_name")
-                    and obj.runbook_name not in seen
-                ):
-                    seen.add(obj.runbook_name)
-                    result.append(
-                        {
-                            "name": obj.runbook_name,
-                            "source_queue": obj.source_queue,
-                        }
-                    )
-
-        return result
-    except Exception as exc:
-        logger.warning("routes_reader.get_runbooks() failed: %s", exc)
-        return []
+    return [
+        {
+            "name": route["name"],
+            "source_queue": route["queue"],
+        }
+        for route in get_routes()
+    ]
