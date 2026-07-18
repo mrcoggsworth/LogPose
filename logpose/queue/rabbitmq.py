@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import contextlib
 import logging
 import os
 import time
@@ -75,12 +77,8 @@ class RabbitMQPublisher:
         if self._channel is None or not self._is_alive():
             raise RuntimeError("Publisher is not connected. Call connect() first.")
 
-        body = alert.model_dump_json().encode()
-        properties = pika.BasicProperties(
-            content_type="application/json",
-            delivery_mode=pika.DeliveryMode.Persistent,  # type: ignore[attr-defined]
-        )
-        self.publish_to_queue(QUEUE_NAME, body, properties)
+        # publish_to_queue applies the same persistent-JSON properties by default.
+        self.publish_to_queue(QUEUE_NAME, alert.model_dump_json().encode())
         logger.debug("Published alert %s from source=%s", alert.id, alert.source)
 
     def publish_to_queue(
@@ -154,26 +152,19 @@ class RabbitMQPublisher:
     def _reconnect(self) -> None:
         if self._shared is not None:
             # Shared connection is owned by the caller — only reopen the channel.
-            try:
+            with contextlib.suppress(Exception):
                 if self._channel is not None and self._channel.is_open:
                     self._channel.close()
-            except Exception:
-                pass
-            finally:
-                self._channel = None
             self._channel = self._shared.channel()
             self._channel.queue_declare(queue=QUEUE_NAME, durable=True)
             logger.info("Reopened publisher channel on shared connection")
             return
 
-        try:
+        with contextlib.suppress(Exception):
             if self._connection is not None and self._connection.is_open:
                 self._connection.close()
-        except Exception:
-            pass
-        finally:
-            self._connection = None
-            self._channel = None
+        self._connection = None
+        self._channel = None
         self.connect()
 
     def disconnect(self) -> None:
