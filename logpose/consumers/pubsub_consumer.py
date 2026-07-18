@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -139,11 +140,12 @@ class PubSubConsumer(BaseConsumer):
             return
 
         try:
-            import json
-
-            payload: dict = json.loads(raw_data)
-        except Exception:
-            payload = {"data": raw_data}
+            parsed = json.loads(raw_data)
+        except ValueError:
+            parsed = None
+        # Non-JSON text and JSON scalars/arrays are wrapped so raw_payload is
+        # always a dict (the shape Alert requires).
+        payload: dict = parsed if isinstance(parsed, dict) else {"data": raw_data}
 
         alert = Alert(
             source="pubsub",
