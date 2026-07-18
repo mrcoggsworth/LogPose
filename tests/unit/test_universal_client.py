@@ -63,9 +63,7 @@ def test_build_event_defaults_timestamp_to_now(client: UniversalHTTPClient) -> N
 
 
 def test_send_posts_single_event_immediately(client: UniversalHTTPClient) -> None:
-    with patch.object(
-        client._session, "post", return_value=_ok_response()
-    ) as mock_post:
+    with patch.object(client._session, "post", return_value=_ok_response()) as mock_post:
         event = client.build_event({"a": 1}, "s", "t")
         client.send(event)
         mock_post.assert_called_once()
@@ -105,9 +103,7 @@ def test_retries_on_429(client: UniversalHTTPClient) -> None:
     rate_limited.status_code = 429
     rate_limited.text = ""
 
-    with patch.object(
-        client._session, "post", side_effect=[rate_limited, _ok_response()]
-    ):
+    with patch.object(client._session, "post", side_effect=[rate_limited, _ok_response()]):
         with patch("logpose.forwarder.universal_client.time.sleep"):
             client.send(client.build_event({}, "s", "t"))
 
@@ -117,9 +113,7 @@ def test_retries_on_5xx(client: UniversalHTTPClient) -> None:
     server_error.status_code = 503
     server_error.text = ""
 
-    with patch.object(
-        client._session, "post", side_effect=[server_error, _ok_response()]
-    ):
+    with patch.object(client._session, "post", side_effect=[server_error, _ok_response()]):
         with patch("logpose.forwarder.universal_client.time.sleep"):
             client.send(client.build_event({}, "s", "t"))
 

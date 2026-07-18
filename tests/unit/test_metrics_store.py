@@ -65,7 +65,8 @@ def test_increment_custom_amount(store: MetricsStore) -> None:
 
 def test_sqlite_round_trip() -> None:
     """Counters written by one store are readable by a second store on the same path."""
-    import tempfile, os
+    import os
+    import tempfile
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         path = f.name

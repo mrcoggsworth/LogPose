@@ -104,9 +104,7 @@ class DLQForwarder:
             try:
                 message: dict[str, Any] = json.loads(body.decode())
             except Exception as exc:
-                logger.error(
-                    "Failed to parse DLQ message body from %s: %s", QUEUE_DLQ, exc
-                )
+                logger.error("Failed to parse DLQ message body from %s: %s", QUEUE_DLQ, exc)
                 channel.basic_nack(delivery_tag=tag, requeue=False)
                 return
 
@@ -115,9 +113,7 @@ class DLQForwarder:
                 channel.basic_ack(delivery_tag=tag)
             except Exception as exc:
                 alert_id = message.get("alert", {}).get("id", "unknown")
-                logger.error(
-                    "Failed to forward DLQ alert %s to Splunk: %s", alert_id, exc
-                )
+                logger.error("Failed to forward DLQ alert %s to Splunk: %s", alert_id, exc)
                 channel.basic_nack(delivery_tag=tag, requeue=False)
 
         self._channel.basic_consume(

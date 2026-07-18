@@ -15,7 +15,7 @@ import logging
 import sys
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 
 logging.basicConfig(
     level=logging.INFO,

@@ -123,9 +123,7 @@ class N8NWorkflowClient:
         try:
             body = response.json()
         except ValueError as exc:
-            raise WorkflowBadResponseError(
-                f"N8N response was not valid JSON: {exc}"
-            ) from exc
+            raise WorkflowBadResponseError(f"N8N response was not valid JSON: {exc}") from exc
         if not isinstance(body, dict):
             raise WorkflowBadResponseError(
                 f"N8N response must be a JSON object, got {type(body).__name__}"

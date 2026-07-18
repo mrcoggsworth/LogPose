@@ -36,9 +36,7 @@ class KafkaConsumer(BaseConsumer):
         topics: list[str] | None = None,
         emitter: MetricsEmitter | None = None,
     ) -> None:
-        self._bootstrap_servers = bootstrap_servers or os.environ[
-            "KAFKA_BOOTSTRAP_SERVERS"
-        ]
+        self._bootstrap_servers = bootstrap_servers or os.environ["KAFKA_BOOTSTRAP_SERVERS"]
         self._group_id = group_id or os.environ["KAFKA_GROUP_ID"]
         self._topics = topics or os.environ["KAFKA_TOPICS"].split(",")
         self._consumer: Consumer | None = None
@@ -127,9 +125,7 @@ class KafkaConsumer(BaseConsumer):
         """Signal the consume loop to exit after the current poll completes."""
         self._running = False
 
-    def _handle_message(
-        self, msg: Message, callback: Callable[[Alert], None]
-    ) -> None:
+    def _handle_message(self, msg: Message, callback: Callable[[Alert], None]) -> None:
         raw_value = msg.value()
         if raw_value is None:
             logger.warning("Received Kafka message with null value; skipping")
@@ -138,9 +134,7 @@ class KafkaConsumer(BaseConsumer):
         try:
             payload: dict[str, Any] = json.loads(raw_value.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            logger.error(
-                "Failed to decode Kafka message on topic %s: %s", msg.topic(), exc
-            )
+            logger.error("Failed to decode Kafka message on topic %s: %s", msg.topic(), exc)
             return
 
         alert = Alert(

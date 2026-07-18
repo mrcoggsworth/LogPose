@@ -25,9 +25,9 @@ class RabbitMQApiClient:
         password: str | None = None,
         timeout: int = 5,
     ) -> None:
-        self._base_url = (base_url or os.environ.get(
-            "RABBITMQ_MGMT_URL", "http://localhost:15672"
-        )).rstrip("/")
+        self._base_url = (
+            base_url or os.environ.get("RABBITMQ_MGMT_URL", "http://localhost:15672")
+        ).rstrip("/")
         self._auth = HTTPBasicAuth(
             username or os.environ.get("RABBITMQ_USER", "guest"),
             password or os.environ.get("RABBITMQ_PASS", "guest"),

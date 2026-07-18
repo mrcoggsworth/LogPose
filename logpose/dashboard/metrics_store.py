@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import threading
@@ -129,7 +128,8 @@ class MetricsStore:
             with sqlite3.connect(self._db_path) as conn:
                 conn.executemany(
                     "INSERT INTO logpose_metrics (key, value, updated_at) VALUES (?, ?, ?)"
-                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                    " ON CONFLICT(key) DO UPDATE SET"
+                    " value=excluded.value, updated_at=excluded.updated_at",
                     rows,
                 )
                 conn.commit()

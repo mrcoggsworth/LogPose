@@ -93,9 +93,7 @@ def test_send_auto_flushes_at_batch_size(client: SplunkHECClient) -> None:
 
 
 def test_flush_sends_newline_delimited_json(client: SplunkHECClient) -> None:
-    with patch.object(
-        client._session, "post", return_value=_ok_response()
-    ) as mock_post:
+    with patch.object(client._session, "post", return_value=_ok_response()) as mock_post:
         client.send(client.build_event({"a": 1}, "s", "t"))
         client.send(client.build_event({"b": 2}, "s", "t"))
         client.flush()
@@ -150,9 +148,7 @@ def test_flush_retries_on_5xx(client: SplunkHECClient) -> None:
     server_error = MagicMock()
     server_error.status_code = 503
 
-    with patch.object(
-        client._session, "post", side_effect=[server_error, _ok_response()]
-    ):
+    with patch.object(client._session, "post", side_effect=[server_error, _ok_response()]):
         with patch("logpose.forwarder.splunk_client.time.sleep"):
             client.send(client.build_event({}, "s", "t"))
             client.flush()
@@ -200,9 +196,7 @@ def test_flush_retries_on_network_error(client: SplunkHECClient) -> None:
 def test_context_manager_flushes_remaining_events_on_exit(
     client: SplunkHECClient,
 ) -> None:
-    with patch.object(
-        client._session, "post", return_value=_ok_response()
-    ) as mock_post:
+    with patch.object(client._session, "post", return_value=_ok_response()) as mock_post:
         with client:
             client.send(client.build_event({"final": True}, "s", "t"))
         mock_post.assert_called_once()

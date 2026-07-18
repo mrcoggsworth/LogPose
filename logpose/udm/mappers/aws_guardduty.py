@@ -82,9 +82,7 @@ def _target_from_resource(payload: dict[str, Any]) -> UdmNoun | None:
 
     if resource_type:
         return UdmNoun(
-            resource=UdmResource(
-                name=str(resource_type), resource_type=str(resource_type)
-            )
+            resource=UdmResource(name=str(resource_type), resource_type=str(resource_type))
         )
     return None
 
@@ -96,9 +94,7 @@ def map_to_udm(alert: Alert) -> UdmEvent:
     return UdmEvent(
         metadata=UdmMetadata(
             event_type=EventType.SCAN_UNCATEGORIZED,
-            event_timestamp=_parse_time(
-                payload.get("updatedAt") or payload.get("createdAt")
-            ),
+            event_timestamp=_parse_time(payload.get("updatedAt") or payload.get("createdAt")),
             ingested_timestamp=alert.received_at,
             vendor_name=_VENDOR,
             product_name=_PRODUCT,

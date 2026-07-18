@@ -146,9 +146,7 @@ def test_emits_alert_ingested_with_alert_source() -> None:
     from unittest.mock import MagicMock
 
     emitter = MagicMock()
-    consumer = UniversalHTTPConsumer(
-        host="127.0.0.1", port=8090, token=None, emitter=emitter
-    )
+    consumer = UniversalHTTPConsumer(host="127.0.0.1", port=8090, token=None, emitter=emitter)
     client = _attach_test_client(consumer, lambda _: None)
 
     client.post("/ingest", json={"raw_payload": {"x": 1}, "source": "webhook-42"})

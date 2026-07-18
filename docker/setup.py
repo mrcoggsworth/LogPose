@@ -44,6 +44,7 @@ _WAIT_SECONDS = 60
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _wait_for(fn, label: str) -> None:
     deadline = time.monotonic() + _WAIT_SECONDS
     last_exc: Exception | None = None
@@ -61,6 +62,7 @@ def _wait_for(fn, label: str) -> None:
 # ---------------------------------------------------------------------------
 # LocalStack (SNS + SQS)
 # ---------------------------------------------------------------------------
+
 
 def setup_localstack() -> None:
     import boto3
@@ -86,9 +88,9 @@ def setup_localstack() -> None:
     queue_url = sqs.create_queue(QueueName=SQS_QUEUE_NAME)["QueueUrl"]
     logger.info("SQS queue: %s", queue_url)
 
-    queue_arn = sqs.get_queue_attributes(
-        QueueUrl=queue_url, AttributeNames=["QueueArn"]
-    )["Attributes"]["QueueArn"]
+    queue_arn = sqs.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["QueueArn"])[
+        "Attributes"
+    ]["QueueArn"]
 
     try:
         sns.subscribe(TopicArn=topic_arn, Protocol="sqs", Endpoint=queue_arn)
@@ -100,6 +102,7 @@ def setup_localstack() -> None:
 # ---------------------------------------------------------------------------
 # Pub/Sub emulator
 # ---------------------------------------------------------------------------
+
 
 def setup_pubsub() -> None:
     os.environ["PUBSUB_EMULATOR_HOST"] = PUBSUB_EMULATOR_HOST

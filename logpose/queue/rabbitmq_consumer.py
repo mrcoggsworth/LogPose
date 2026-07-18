@@ -147,9 +147,7 @@ class RabbitMQConsumer:
             try:
                 self._channel.stop_consuming()
             except Exception as exc:
-                logger.warning(
-                    "Error stopping consumer on queue=%s: %s", self._queue, exc
-                )
+                logger.warning("Error stopping consumer on queue=%s: %s", self._queue, exc)
 
     def disconnect(self) -> None:
         try:

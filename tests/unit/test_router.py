@@ -157,10 +157,7 @@ def test_router_attaches_udm_to_routed_alert(
     published = json.loads(body)
     assert published["udm"] is not None
     assert published["udm"]["metadata"]["event_type"] == "RESOURCE_CREATION"
-    assert (
-        published["udm"]["principal"]["user"]["userid"]
-        == "arn:aws:iam::123456789012:user/alice"
-    )
+    assert published["udm"]["principal"]["user"]["userid"] == "arn:aws:iam::123456789012:user/alice"
     # Raw payload is preserved untouched alongside the UDM view.
     assert published["raw_payload"]["eventName"] == "PutObject"
 

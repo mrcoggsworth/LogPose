@@ -34,8 +34,16 @@ _PRODUCT = "AWS CloudTrail"
 _VERB_PREFIXES: tuple[tuple[tuple[str, ...], EventType], ...] = (
     (("ConsoleLogin",), EventType.USER_LOGIN),
     (
-        ("PutBucketPolicy", "PutUserPolicy", "PutRolePolicy", "PutGroupPolicy",
-         "Attach", "Detach", "PutBucketAcl", "PutObjectAcl"),
+        (
+            "PutBucketPolicy",
+            "PutUserPolicy",
+            "PutRolePolicy",
+            "PutGroupPolicy",
+            "Attach",
+            "Detach",
+            "PutBucketAcl",
+            "PutObjectAcl",
+        ),
         EventType.RESOURCE_PERMISSIONS_CHANGE,
     ),
     (
@@ -137,9 +145,7 @@ def map_to_udm(alert: Alert) -> UdmEvent:
                 summary=error_code,
                 category_details=payload.get("errorMessage"),
                 action=(
-                    "BLOCK"
-                    if "Denied" in error_code or "Unauthorized" in error_code
-                    else None
+                    "BLOCK" if "Denied" in error_code or "Unauthorized" in error_code else None
                 ),
             )
         )

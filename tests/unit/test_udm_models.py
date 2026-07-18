@@ -33,13 +33,9 @@ def test_udm_event_json_round_trip() -> None:
             product_name="AWS CloudTrail",
         ),
         principal=UdmNoun(
-            user=UdmUser(
-                userid="arn:aws:iam::123:user/alice", user_display_name="alice"
-            )
+            user=UdmUser(userid="arn:aws:iam::123:user/alice", user_display_name="alice")
         ),
-        security_result=[
-            UdmSecurityResult(severity=SecuritySeverity.HIGH, summary="failed login")
-        ],
+        security_result=[UdmSecurityResult(severity=SecuritySeverity.HIGH, summary="failed login")],
         additional={"raw_event_name": "ConsoleLogin"},
     )
 
@@ -61,11 +57,7 @@ def test_alert_udm_defaults_to_none_and_serializes() -> None:
 def test_alert_round_trips_with_udm_attached() -> None:
     alert = Alert(source="kafka", raw_payload={"a": 1})
     with_udm = alert.model_copy(
-        update={
-            "udm": UdmEvent(
-                metadata=UdmMetadata(event_type=EventType.RESOURCE_READ)
-            )
-        }
+        update={"udm": UdmEvent(metadata=UdmMetadata(event_type=EventType.RESOURCE_READ))}
     )
 
     restored = Alert.model_validate_json(with_udm.model_dump_json())

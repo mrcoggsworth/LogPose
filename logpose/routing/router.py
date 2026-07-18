@@ -102,7 +102,9 @@ class Router:
             self._publish_to_dlq(
                 alert.model_copy(update={"udm": normalize_alert(alert, None)}),
                 reason="no_route_matched",
-                detail=f"No matcher returned True for payload keys: {list(alert.raw_payload.keys())}",
+                detail=(
+                    f"No matcher returned True for payload keys: {list(alert.raw_payload.keys())}"
+                ),
             )
             return
 
