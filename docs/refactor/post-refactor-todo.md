@@ -62,8 +62,15 @@ being down, not on missing variables).
 
 ## 2. Update `CLAUDE.md` Phase II to describe the new architecture
 
-**Status:** Deliberately left alone — it's your project-instruction file and
-describes your original phase plan ("route … to the correct runbook as code",
+**Status:** ✅ **DONE** — owner granted permission and CLAUDE.md was updated in
+this branch: phases rewritten for the N8N + UDM architecture, a "Current
+Architecture" summary added at the top, plus new NOT-do guardrails (no
+enrichment logic in this repo, don't recreate runbooks/enrichers, don't rename
+UDM/queue contract names) and project-specific patterns. Remaining "runbook"
+mentions are labeled as retired history. Nothing left to do here.
+
+Original context (kept for the record): it's your project-instruction file and
+described the original phase plan ("route … to the correct runbook as code",
 "Each runbook as code will run as a separate pod"). Rewriting your own charter
 document felt like an owner decision, not a refactor step.
 
