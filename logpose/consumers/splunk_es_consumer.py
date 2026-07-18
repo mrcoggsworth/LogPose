@@ -118,11 +118,10 @@ class SplunkESConsumer(BaseConsumer):
         try:
             while self._running:
                 self._poll_once(callback)
-                # Wake early if stop() is called mid-sleep
-                slept = 0.0
-                while self._running and slept < self._poll_seconds:
-                    time.sleep(min(1.0, self._poll_seconds - slept))
-                    slept += 1.0
+                # Sleep in short slices so stop() takes effect within ~1s.
+                deadline = time.monotonic() + self._poll_seconds
+                while self._running and time.monotonic() < deadline:
+                    time.sleep(min(1.0, deadline - time.monotonic()))
         except KeyboardInterrupt:
             logger.info("SplunkESConsumer poll loop interrupted")
 
@@ -204,15 +203,14 @@ def _main() -> None:
     Behaviour mirrors the other consumer __main__ launchers: normalized
     Alerts are published to QUEUE_ALERTS for the router to pick up.
     """
-    import logging as _logging
-    import sys as _sys
+    import sys
 
     from logpose.queue.rabbitmq import RabbitMQPublisher
 
-    _logging.basicConfig(
-        level=_logging.INFO,
+    logging.basicConfig(
+        level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=_sys.stdout,
+        stream=sys.stdout,
     )
 
     emitter = MetricsEmitter()
