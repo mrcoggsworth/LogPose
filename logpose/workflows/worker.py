@@ -70,9 +70,7 @@ class WorkflowWorker:
         """Connect and start the blocking consume/invoke/publish loop."""
         with self._publisher:
             if self._publisher._channel is not None:
-                self._publisher._channel.queue_declare(
-                    queue=QUEUE_ENRICHED, durable=True
-                )
+                self._publisher._channel.queue_declare(queue=QUEUE_ENRICHED, durable=True)
                 self._publisher._channel.queue_declare(queue=QUEUE_DLQ, durable=True)
 
             with self._consumer:
@@ -118,14 +116,11 @@ class WorkflowWorker:
         udm_raw = response.get("udm")
         if isinstance(udm_raw, dict):
             try:
-                alert = alert.model_copy(
-                    update={"udm": UdmEvent.model_validate(udm_raw)}
-                )
+                alert = alert.model_copy(update={"udm": UdmEvent.model_validate(udm_raw)})
             except Exception as exc:
                 # A bad UDM section from the workflow must not lose the alert.
                 logger.warning(
-                    "Workflow '%s' returned invalid udm for alert %s — keeping "
-                    "router UDM: %s",
+                    "Workflow '%s' returned invalid udm for alert %s — keeping " "router UDM: %s",
                     self._route_name,
                     alert.id,
                     exc,
@@ -136,14 +131,10 @@ class WorkflowWorker:
         else:
             # Lenient mode: a workflow that just returns a flat JSON object
             # gets that object recorded as its extracted fields.
-            extracted = {
-                k: v for k, v in response.items() if k not in ("udm", "destination")
-            }
+            extracted = {k: v for k, v in response.items() if k not in ("udm", "destination")}
 
         destination_raw = response.get("destination")
-        destination = (
-            destination_raw if destination_raw in _VALID_DESTINATIONS else "splunk"
-        )
+        destination = destination_raw if destination_raw in _VALID_DESTINATIONS else "splunk"
 
         error = response.get("error")
         return EnrichedAlert(
@@ -168,9 +159,7 @@ class WorkflowWorker:
         )
         self._publisher.publish_to_queue(QUEUE_DLQ, body, _PERSISTENT_JSON)
         if self._emitter is not None:
-            self._emitter.emit(
-                "workflow_error", {"workflow": self._route_name, "reason": reason}
-            )
+            self._emitter.emit("workflow_error", {"workflow": self._route_name, "reason": reason})
 
     def __enter__(self) -> "WorkflowWorker":
         self._publisher.connect()

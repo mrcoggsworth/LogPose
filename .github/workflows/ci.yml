@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-unit:
+    name: Lint + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest pytest-asyncio httpx flake8 "black==26.3.1"
+
+      - name: black --check
+        run: black --check logpose tests docker
+
+      - name: flake8
+        run: flake8 logpose tests docker
+
+      - name: Unit tests
+        run: pytest tests/unit -q
+
+  integration:
+    name: Integration tests (compose stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: lint-and-unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # SETUPTOOLS_USE_DISTUTILS works around the Debian/Ubuntu-patched
+          # setuptools 'install_layout' failure when building splunk-sdk.
+          SETUPTOOLS_USE_DISTUTILS=local pip install --use-pep517 -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Start compose stack
+        run: docker compose -f docker/docker-compose.yml up -d --build
+
+      - name: Wait for services
+        run: |
+          wait_for() {
+            local name="$1" url="$2" deadline=$((SECONDS + 180))
+            until curl -fsS "$url" > /dev/null 2>&1; do
+              if (( SECONDS >= deadline )); then
+                echo "::error::Timed out waiting for $name at $url"
+                return 1
+              fi
+              sleep 3
+            done
+            echo "$name is up"
+          }
+          wait_for "RabbitMQ management" "http://guest:guest@localhost:15672/api/overview"
+          wait_for "LocalStack"          "http://localhost:4566/_localstack/health"
+          wait_for "Pub/Sub emulator"    "http://localhost:8085/v1/projects/logpose-dev/topics"
+          wait_for "Splunk HEC mock"     "http://localhost:8088/health"
+          wait_for "N8N mock"            "http://localhost:5678/health"
+          wait_for "Universal consumer"  "http://localhost:8090/healthz"
+
+      - name: Integration tests
+        run: pytest tests/integration -v -m integration
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose -f docker/docker-compose.yml logs --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker/docker-compose.yml down -v

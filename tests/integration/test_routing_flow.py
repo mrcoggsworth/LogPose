@@ -185,9 +185,7 @@ def test_cloudtrail_alert_routed_to_cloudtrail_queue(
     routed = drain_rabbitmq_queue(routing_channel, queue=QUEUE_WORKFLOW_CLOUDTRAIL)
     dlq = drain_rabbitmq_queue(routing_channel, queue=QUEUE_DLQ)
 
-    assert (
-        len(routed) == 1
-    ), f"Expected 1 message in {QUEUE_WORKFLOW_CLOUDTRAIL}, got {len(routed)}"
+    assert len(routed) == 1, f"Expected 1 message in {QUEUE_WORKFLOW_CLOUDTRAIL}, got {len(routed)}"
     assert routed[0]["id"] == alert.id
     assert routed[0]["udm"]["metadata"]["event_type"] == "USER_LOGIN"
     assert routed[0]["udm"]["metadata"]["product_name"] == "AWS CloudTrail"
@@ -237,9 +235,7 @@ def test_test_route_alert_routed_to_test_queue(
     routed = drain_rabbitmq_queue(routing_channel, queue=QUEUE_WORKFLOW_TEST)
     dlq = drain_rabbitmq_queue(routing_channel, queue=QUEUE_DLQ)
 
-    assert (
-        len(routed) == 1
-    ), f"Expected 1 message in {QUEUE_WORKFLOW_TEST}, got {len(routed)}"
+    assert len(routed) == 1, f"Expected 1 message in {QUEUE_WORKFLOW_TEST}, got {len(routed)}"
     assert routed[0]["id"] == alert.id
     assert len(dlq) == 0
 
@@ -254,18 +250,14 @@ def test_workflow_worker_invokes_n8n_and_publishes_to_enriched_queue(
     # Simulate what the router does: attach UDM before the workflow queue.
     from logpose.udm.normalize import normalize_alert
 
-    alert = alert.model_copy(
-        update={"udm": normalize_alert(alert, "cloud.aws.cloudtrail")}
-    )
+    alert = alert.model_copy(update={"udm": normalize_alert(alert, "cloud.aws.cloudtrail")})
 
     # Publish directly to the cloudtrail workflow queue (bypass router)
     routing_channel.basic_publish(
         exchange="",
         routing_key=QUEUE_WORKFLOW_CLOUDTRAIL,
         body=alert.model_dump_json().encode(),
-        properties=pika.BasicProperties(
-            content_type="application/json", delivery_mode=2
-        ),
+        properties=pika.BasicProperties(content_type="application/json", delivery_mode=2),
     )
 
     worker = WorkflowWorker(
@@ -284,9 +276,7 @@ def test_workflow_worker_invokes_n8n_and_publishes_to_enriched_queue(
 
     enriched_messages = drain_rabbitmq_queue(routing_channel, queue=QUEUE_ENRICHED)
 
-    assert (
-        len(enriched_messages) == 1
-    ), f"Expected 1 enriched message, got {len(enriched_messages)}"
+    assert len(enriched_messages) == 1, f"Expected 1 enriched message, got {len(enriched_messages)}"
 
     enriched = EnrichedAlert.model_validate(enriched_messages[0])
     assert enriched.workflow == "cloud.aws.cloudtrail"

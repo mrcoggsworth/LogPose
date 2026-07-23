@@ -52,9 +52,7 @@ def forwarder(splunk: SplunkHECClient) -> DLQForwarder:
 # ---------------------------------------------------------------------------
 
 
-def test_dlq_forward_sets_dlq_sourcetype(
-    forwarder: DLQForwarder, splunk: SplunkHECClient
-) -> None:
+def test_dlq_forward_sets_dlq_sourcetype(forwarder: DLQForwarder, splunk: SplunkHECClient) -> None:
     with patch.object(splunk, "send") as mock_send, patch.object(splunk, "flush"):
         forwarder._forward(_dlq_message())
         event = mock_send.call_args[0][0]

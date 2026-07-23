@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 
 from logpose.dashboard.metrics_consumer import MetricsConsumer
 from logpose.dashboard.metrics_store import MetricsStore

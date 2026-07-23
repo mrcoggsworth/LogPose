@@ -4,6 +4,7 @@ Run with Docker Compose services up:
   docker compose -f docker/docker-compose.yml up -d
   pytest tests/integration/test_kafka_ingestion.py -v -m integration
 """
+
 from __future__ import annotations
 
 import json
@@ -31,9 +32,7 @@ def rabbitmq_channel(rabbitmq_connection):
     return rabbitmq_connection.channel()
 
 
-def test_kafka_message_becomes_alert_in_rabbitmq(
-    kafka_producer, rabbitmq_channel
-) -> None:
+def test_kafka_message_becomes_alert_in_rabbitmq(kafka_producer, rabbitmq_channel) -> None:
     test_payload = {
         "rule": "brute-force-login",
         "severity": "HIGH",
@@ -58,9 +57,7 @@ def test_kafka_message_becomes_alert_in_rabbitmq(
         consumer.stop()
 
     # Publish a test message to Kafka
-    kafka_producer.produce(
-        KAFKA_TOPIC, value=json.dumps(test_payload).encode("utf-8")
-    )
+    kafka_producer.produce(KAFKA_TOPIC, value=json.dumps(test_payload).encode("utf-8"))
     kafka_producer.flush()
 
     consumer = KafkaConsumer(
@@ -94,6 +91,6 @@ def test_kafka_message_becomes_alert_in_rabbitmq(
     assert alert.metadata["topic"] == KAFKA_TOPIC
 
     queued = drain_rabbitmq_queue(rabbitmq_channel)
-    assert any(q["source"] == "kafka" for q in queued), (
-        "Alert was not found in RabbitMQ alerts queue"
-    )
+    assert any(
+        q["source"] == "kafka" for q in queued
+    ), "Alert was not found in RabbitMQ alerts queue"

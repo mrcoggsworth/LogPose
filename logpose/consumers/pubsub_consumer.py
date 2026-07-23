@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -52,9 +53,7 @@ class PubSubConsumer(BaseConsumer):
             self._project_id, self._subscription_id
         )
         self._running = True
-        logger.info(
-            "PubSubConsumer connected to subscription %s", self._subscription_path
-        )
+        logger.info("PubSubConsumer connected to subscription %s", self._subscription_path)
 
     def consume(self, callback: Callable[[Alert], None]) -> None:
         if self._subscriber is None or self._subscription_path is None:
@@ -141,19 +140,19 @@ class PubSubConsumer(BaseConsumer):
             return
 
         try:
-            import json
-            payload: dict = json.loads(raw_data)
-        except Exception:
-            payload = {"data": raw_data}
+            parsed = json.loads(raw_data)
+        except ValueError:
+            parsed = None
+        # Non-JSON text and JSON scalars/arrays are wrapped so raw_payload is
+        # always a dict (the shape Alert requires).
+        payload: dict = parsed if isinstance(parsed, dict) else {"data": raw_data}
 
         alert = Alert(
             source="pubsub",
             raw_payload=payload,
             metadata={
                 "message_id": msg.message_id,
-                "publish_time": msg.publish_time.isoformat()
-                if msg.publish_time
-                else None,
+                "publish_time": msg.publish_time.isoformat() if msg.publish_time else None,
                 "attributes": dict(msg.attributes),
                 "subscription": self._subscription_path,
             },

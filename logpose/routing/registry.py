@@ -49,8 +49,7 @@ class RouteRegistry:
         """Register a route. Raises ValueError if the name is already registered."""
         if route.name in self._routes:
             raise ValueError(
-                f"Route '{route.name}' is already registered. "
-                "Each route name must be unique."
+                f"Route '{route.name}' is already registered. " "Each route name must be unique."
             )
         self._routes[route.name] = route
         logger.debug("Registered route '%s' -> queue='%s'", route.name, route.queue)

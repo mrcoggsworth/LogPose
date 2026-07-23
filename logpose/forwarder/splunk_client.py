@@ -82,8 +82,7 @@ class SplunkHECClient:
         )
         self._buffer: list[dict[str, Any]] = []
         logger.info(
-            "SplunkHECClient initialized: url=%s index=%s batch_size=%d "
-            "token=%s scheme=%s",
+            "SplunkHECClient initialized: url=%s index=%s batch_size=%d " "token=%s scheme=%s",
             self._url,
             self._index,
             self._batch_size,
@@ -92,8 +91,10 @@ class SplunkHECClient:
         )
         logger.debug(
             "SplunkHECClient session headers: %s",
-            {k: (_mask_token(v) if k == "Authorization" else v)
-             for k, v in self._session.headers.items()},
+            {
+                k: (_mask_token(v) if k == "Authorization" else v)
+                for k, v in self._session.headers.items()
+            },
         )
 
     def build_event(
@@ -199,8 +200,7 @@ class SplunkHECClient:
 
                 if response.status_code == 429 or response.status_code >= 500:
                     logger.warning(
-                        "Splunk HEC returned %d on attempt %d/%d (body=%s) "
-                        "— retrying in %.1fs",
+                        "Splunk HEC returned %d on attempt %d/%d (body=%s) " "— retrying in %.1fs",
                         response.status_code,
                         attempt,
                         _MAX_RETRY_ATTEMPTS,
@@ -219,8 +219,7 @@ class SplunkHECClient:
                     response.text[:500],
                 )
                 raise RuntimeError(
-                    f"Splunk HEC permanent error {response.status_code}: "
-                    f"{response.text[:200]}"
+                    f"Splunk HEC permanent error {response.status_code}: " f"{response.text[:200]}"
                 )
 
             except requests.RequestException as exc:

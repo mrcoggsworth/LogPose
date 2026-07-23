@@ -61,14 +61,10 @@ class SplunkESConsumer(BaseConsumer):
         emitter: MetricsEmitter | None = None,
     ) -> None:
         self._host = host or os.environ["SPLUNK_ES_HOST"]
-        self._port = (
-            port if port is not None else int(os.environ.get("SPLUNK_ES_PORT", "8089"))
-        )
+        self._port = port if port is not None else int(os.environ.get("SPLUNK_ES_PORT", "8089"))
         self._token = token or os.environ["SPLUNK_ES_TOKEN"]
         self._scheme = scheme or os.environ.get("SPLUNK_ES_SCHEME", "https")
-        self._search = search or os.environ.get(
-            "SPLUNK_ES_SEARCH", "search index=notable"
-        )
+        self._search = search or os.environ.get("SPLUNK_ES_SEARCH", "search index=notable")
         self._poll_seconds = (
             poll_seconds
             if poll_seconds is not None
@@ -80,9 +76,7 @@ class SplunkESConsumer(BaseConsumer):
             else int(os.environ.get("SPLUNK_ES_BACKFILL_MINUTES", "5"))
         )
         if verify_tls is None:
-            verify_tls = (
-                os.environ.get("SPLUNK_ES_VERIFY_TLS", "true").lower() != "false"
-            )
+            verify_tls = os.environ.get("SPLUNK_ES_VERIFY_TLS", "true").lower() != "false"
         self._verify_tls = verify_tls
 
         self._service: Any | None = None
@@ -103,9 +97,7 @@ class SplunkESConsumer(BaseConsumer):
         # backfill window. Restarts within this window re-process events
         # idempotently; downstream consumers must tolerate that.
         if self._checkpoint is None:
-            start = datetime.now(tz=timezone.utc) - timedelta(
-                minutes=self._backfill_minutes
-            )
+            start = datetime.now(tz=timezone.utc) - timedelta(minutes=self._backfill_minutes)
             self._checkpoint = start.isoformat()
         logger.info(
             "SplunkESConsumer connected to %s://%s:%d (search=%r, checkpoint=%s)",
@@ -126,11 +118,10 @@ class SplunkESConsumer(BaseConsumer):
         try:
             while self._running:
                 self._poll_once(callback)
-                # Wake early if stop() is called mid-sleep
-                slept = 0.0
-                while self._running and slept < self._poll_seconds:
-                    time.sleep(min(1.0, self._poll_seconds - slept))
-                    slept += 1.0
+                # Sleep in short slices so stop() takes effect within ~1s.
+                deadline = time.monotonic() + self._poll_seconds
+                while self._running and time.monotonic() < deadline:
+                    time.sleep(min(1.0, deadline - time.monotonic()))
         except KeyboardInterrupt:
             logger.info("SplunkESConsumer poll loop interrupted")
 
@@ -141,13 +132,9 @@ class SplunkESConsumer(BaseConsumer):
             "output_mode": "json",
         }
         try:
-            stream = self._service.jobs.oneshot(  # type: ignore[union-attr]
-                self._search, **kwargs
-            )
+            stream = self._service.jobs.oneshot(self._search, **kwargs)  # type: ignore[union-attr]
         except Exception as exc:
-            logger.warning(
-                "SplunkESConsumer oneshot search failed: %s — continuing", exc
-            )
+            logger.warning("SplunkESConsumer oneshot search failed: %s — continuing", exc)
             return
 
         try:
@@ -216,15 +203,14 @@ def _main() -> None:
     Behaviour mirrors the other consumer __main__ launchers: normalized
     Alerts are published to QUEUE_ALERTS for the router to pick up.
     """
-    import logging as _logging
-    import sys as _sys
+    import sys
 
     from logpose.queue.rabbitmq import RabbitMQPublisher
 
-    _logging.basicConfig(
-        level=_logging.INFO,
+    logging.basicConfig(
+        level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=_sys.stdout,
+        stream=sys.stdout,
     )
 
     emitter = MetricsEmitter()

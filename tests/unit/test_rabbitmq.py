@@ -1,4 +1,5 @@
 """Unit tests for the RabbitMQ publisher (mocked pika)."""
+
 from typing import Generator
 from unittest.mock import MagicMock, patch
 
@@ -7,7 +8,6 @@ import pika.exceptions
 
 from logpose.models.alert import Alert
 from logpose.queue.rabbitmq import RabbitMQPublisher, QUEUE_NAME
-
 
 RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
 
@@ -29,9 +29,7 @@ def test_connect_declares_durable_queue(mock_pika: tuple[MagicMock, MagicMock, M
     publisher = RabbitMQPublisher(url=RABBITMQ_URL)
     publisher.connect()
 
-    mock_channel.queue_declare.assert_called_once_with(
-        queue=QUEUE_NAME, durable=True
-    )
+    mock_channel.queue_declare.assert_called_once_with(queue=QUEUE_NAME, durable=True)
 
 
 def test_publish_sends_json_body(mock_pika: tuple[MagicMock, MagicMock, MagicMock]) -> None:
@@ -65,7 +63,9 @@ def test_disconnect_closes_connection(mock_pika: tuple[MagicMock, MagicMock, Mag
     mock_conn.close.assert_called_once()
 
 
-def test_context_manager_connects_and_disconnects(mock_pika: tuple[MagicMock, MagicMock, MagicMock]) -> None:
+def test_context_manager_connects_and_disconnects(
+    mock_pika: tuple[MagicMock, MagicMock, MagicMock],
+) -> None:
     _, mock_conn, mock_channel = mock_pika
     alert = Alert(source="pubsub", raw_payload={"x": 1})
 
@@ -77,8 +77,10 @@ def test_context_manager_connects_and_disconnects(mock_pika: tuple[MagicMock, Ma
 
 
 def test_connect_retries_on_amqp_error() -> None:
-    with patch("logpose.queue.rabbitmq.pika.BlockingConnection") as mock_cls, \
-         patch("logpose.queue.rabbitmq.time.sleep"):
+    with (
+        patch("logpose.queue.rabbitmq.pika.BlockingConnection") as mock_cls,
+        patch("logpose.queue.rabbitmq.time.sleep"),
+    ):
         mock_cls.side_effect = pika.exceptions.AMQPConnectionError("refused")
         publisher = RabbitMQPublisher(url=RABBITMQ_URL)
 
@@ -89,6 +91,7 @@ def test_connect_retries_on_amqp_error() -> None:
 # ---------------------------------------------------------------------------
 # Shared-connection path
 # ---------------------------------------------------------------------------
+
 
 def _make_shared_conn() -> tuple[MagicMock, MagicMock]:
     """Return (mock_conn, mock_channel) for shared-connection tests."""

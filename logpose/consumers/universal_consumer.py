@@ -62,14 +62,10 @@ class UniversalHTTPConsumer(BaseConsumer):
     ) -> None:
         self._host = host or os.environ.get("UNIVERSAL_HTTP_HOST", "0.0.0.0")
         self._port = (
-            port
-            if port is not None
-            else int(os.environ.get("UNIVERSAL_HTTP_PORT", "8090"))
+            port if port is not None else int(os.environ.get("UNIVERSAL_HTTP_PORT", "8090"))
         )
         # Allow explicit "" to disable auth even if env is set.
-        self._token = (
-            token if token is not None else os.environ.get("UNIVERSAL_HTTP_TOKEN")
-        )
+        self._token = token if token is not None else os.environ.get("UNIVERSAL_HTTP_TOKEN")
         self._emitter = emitter
         self._callback: Callable[[Alert], None] | None = None
         self._app: FastAPI | None = None
@@ -169,15 +165,14 @@ class UniversalHTTPConsumer(BaseConsumer):
 
 def _main() -> None:
     """Standalone entry point: publish received alerts to QUEUE_ALERTS."""
-    import logging as _logging
-    import sys as _sys
+    import sys
 
     from logpose.queue.rabbitmq import RabbitMQPublisher
 
-    _logging.basicConfig(
-        level=_logging.INFO,
+    logging.basicConfig(
+        level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=_sys.stdout,
+        stream=sys.stdout,
     )
 
     emitter = MetricsEmitter()

@@ -7,6 +7,7 @@ Run with Docker Compose services up:
   docker compose -f docker/docker-compose.yml up -d
   pytest tests/integration/test_sqs_ingestion.py -v -m integration
 """
+
 from __future__ import annotations
 
 import json
@@ -36,9 +37,7 @@ def rabbitmq_channel(rabbitmq_connection):
     return rabbitmq_connection.channel()
 
 
-def test_sqs_message_becomes_alert_in_rabbitmq(
-    localstack_clients, rabbitmq_channel
-) -> None:
+def test_sqs_message_becomes_alert_in_rabbitmq(localstack_clients, rabbitmq_channel) -> None:
     sns_client, _sqs_client = localstack_clients
 
     test_payload = {
@@ -107,6 +106,4 @@ def test_sqs_message_becomes_alert_in_rabbitmq(
     assert alert.raw_payload.get("rule") == "privilege-escalation"
 
     queued = drain_rabbitmq_queue(rabbitmq_channel)
-    assert any(q["source"] == "sqs" for q in queued), (
-        "Alert was not found in RabbitMQ alerts queue"
-    )
+    assert any(q["source"] == "sqs" for q in queued), "Alert was not found in RabbitMQ alerts queue"

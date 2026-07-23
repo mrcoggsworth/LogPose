@@ -5,8 +5,6 @@ Matchers are pure functions — no mocks needed, just payload dicts.
 
 from __future__ import annotations
 
-import pytest
-
 from logpose.routing.routes.cloud.aws.cloudtrail import matches as cloudtrail_matches
 from logpose.routing.routes.cloud.aws.guardduty import matches as guardduty_matches
 from logpose.routing.routes.cloud.aws.eks import matches as eks_matches
@@ -125,9 +123,7 @@ def test_gcp_event_audit_matches_valid_log_entry() -> None:
 
 
 def test_gcp_event_audit_rejects_missing_proto_payload() -> None:
-    assert (
-        gcp_audit_matches({"logName": "projects/my-project/logs/cloudaudit"}) is False
-    )
+    assert gcp_audit_matches({"logName": "projects/my-project/logs/cloudaudit"}) is False
 
 
 def test_gcp_event_audit_rejects_non_dict_proto_payload() -> None:
@@ -135,9 +131,7 @@ def test_gcp_event_audit_rejects_non_dict_proto_payload() -> None:
 
 
 def test_gcp_event_audit_rejects_wrong_at_type() -> None:
-    payload = {
-        "protoPayload": {"@type": "type.googleapis.com/google.pubsub.v1.PubsubMessage"}
-    }
+    payload = {"protoPayload": {"@type": "type.googleapis.com/google.pubsub.v1.PubsubMessage"}}
     assert gcp_audit_matches(payload) is False
 
 

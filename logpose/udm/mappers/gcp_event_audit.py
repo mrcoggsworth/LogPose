@@ -105,9 +105,7 @@ def map_to_udm(alert: Alert) -> UdmEvent:
             product_name=_PRODUCT,
             product_event_type=method_name or None,
             product_log_id=payload.get("insertId"),
-            description=(
-                f"{method_name} on {proto.get('serviceName')}" if method_name else None
-            ),
+            description=(f"{method_name} on {proto.get('serviceName')}" if method_name else None),
         ),
         principal=principal,
         target=target,

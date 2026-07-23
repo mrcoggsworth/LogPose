@@ -1,4 +1,5 @@
 """Unit tests for the Alert model."""
+
 from datetime import datetime, timezone
 
 import pytest

@@ -281,7 +281,7 @@ def test_lateral_movement_event(mock_consumer) -> None:
 | File | Purpose |
 |---|---|
 | [`logpose/consumers/kafka_consumer.py`](../../../logpose/consumers/kafka_consumer.py) | Consumer implementation — `_handle_message` decodes and normalizes messages |
-| `tests/unit/test_kafka_consumer.py` *(planned)* | Unit tests with mocked Kafka consumer and event fixtures |
+| [`tests/unit/test_kafka_consumer.py`](../../../tests/unit/test_kafka_consumer.py) | Unit tests with mocked Kafka consumer and event fixtures |
 | [`tests/integration/test_kafka_ingestion.py`](../../../tests/integration/test_kafka_ingestion.py) | End-to-end integration test against the Kafka container |
 | [`tests/integration/conftest.py`](../../../tests/integration/conftest.py) | `kafka_producer` fixture — waits for broker, creates topic via AdminClient |
 | [`docker/docker-compose.yml`](../../../docker/docker-compose.yml) | `kafka` and `zookeeper` service definitions (port 9092) |

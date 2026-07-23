@@ -5,14 +5,13 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from typing import Any
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 
 from logpose.consumers.base import BaseConsumer
 from logpose.metrics.emitter import MetricsEmitter
 from logpose.models.alert import Alert
-
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +35,7 @@ class KafkaConsumer(BaseConsumer):
         topics: list[str] | None = None,
         emitter: MetricsEmitter | None = None,
     ) -> None:
-        self._bootstrap_servers = bootstrap_servers or os.environ[
-            "KAFKA_BOOTSTRAP_SERVERS"
-        ]
+        self._bootstrap_servers = bootstrap_servers or os.environ["KAFKA_BOOTSTRAP_SERVERS"]
         self._group_id = group_id or os.environ["KAFKA_GROUP_ID"]
         self._topics = topics or os.environ["KAFKA_TOPICS"].split(",")
         self._consumer: Consumer | None = None
@@ -89,31 +86,30 @@ class KafkaConsumer(BaseConsumer):
                 time.sleep(_TRANSIENT_ERROR_BACKOFF_SECONDS)
                 continue
 
-            if msg is not None:
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        logger.debug(
-                            "Reached end of partition %s [%d]",
-                            msg.topic(),
-                            msg.partition(),
-                        )
-                    else:
-                        logger.error(
-                            "KafkaConsumer message error: %s — backing off %ds",
-                            msg.error(),
-                            _TRANSIENT_ERROR_BACKOFF_SECONDS,
-                        )
-                        time.sleep(_TRANSIENT_ERROR_BACKOFF_SECONDS)
+            if msg is not None and msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    logger.debug(
+                        "Reached end of partition %s [%d]",
+                        msg.topic(),
+                        msg.partition(),
+                    )
                 else:
-                    try:
-                        self._handle_message(msg, callback)
-                        total_messages += 1
-                    except Exception as exc:
-                        logger.exception(
-                            "KafkaConsumer failed to handle message offset=%s: %s",
-                            msg.offset() if msg else None,
-                            exc,
-                        )
+                    logger.error(
+                        "KafkaConsumer message error: %s — backing off %ds",
+                        msg.error(),
+                        _TRANSIENT_ERROR_BACKOFF_SECONDS,
+                    )
+                    time.sleep(_TRANSIENT_ERROR_BACKOFF_SECONDS)
+            elif msg is not None:
+                try:
+                    self._handle_message(msg, callback)
+                    total_messages += 1
+                except Exception as exc:
+                    logger.exception(
+                        "KafkaConsumer failed to handle message offset=%s: %s",
+                        msg.offset(),
+                        exc,
+                    )
 
             if time.monotonic() - last_heartbeat >= _HEARTBEAT_INTERVAL_SECONDS:
                 logger.info(
@@ -127,9 +123,7 @@ class KafkaConsumer(BaseConsumer):
         """Signal the consume loop to exit after the current poll completes."""
         self._running = False
 
-    def _handle_message(
-        self, msg: Message, callback: Callable[[Alert], None]
-    ) -> None:
+    def _handle_message(self, msg: Message, callback: Callable[[Alert], None]) -> None:
         raw_value = msg.value()
         if raw_value is None:
             logger.warning("Received Kafka message with null value; skipping")
@@ -138,9 +132,7 @@ class KafkaConsumer(BaseConsumer):
         try:
             payload: dict[str, Any] = json.loads(raw_value.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            logger.error(
-                "Failed to decode Kafka message on topic %s: %s", msg.topic(), exc
-            )
+            logger.error("Failed to decode Kafka message on topic %s: %s", msg.topic(), exc)
             return
 
         alert = Alert(

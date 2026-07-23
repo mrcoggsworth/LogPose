@@ -1,4 +1,5 @@
 """Unit tests for SqsConsumer with a CloudTrail event payload (mocked SQS)."""
+
 from __future__ import annotations
 
 import json
@@ -147,10 +148,12 @@ def test_failed_console_login_event(mock_sqs) -> None:
     sqs_msg = {
         "MessageId": "sqs-msg-002",
         "ReceiptHandle": "receipt-handle-def",
-        "Body": json.dumps({
-            **SNS_ENVELOPE,
-            "Message": json.dumps(failed_login),
-        }),
+        "Body": json.dumps(
+            {
+                **SNS_ENVELOPE,
+                "Message": json.dumps(failed_login),
+            }
+        ),
     }
 
     received: list[Alert] = []

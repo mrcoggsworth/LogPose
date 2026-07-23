@@ -151,9 +151,7 @@ def test_worker_records_workflow_error_from_response() -> None:
         ),
     ],
 )
-def test_worker_sends_alert_to_dlq_on_failure(
-    exception: Exception, expected_reason: str
-) -> None:
+def test_worker_sends_alert_to_dlq_on_failure(exception: Exception, expected_reason: str) -> None:
     client = MagicMock()
     client.invoke.side_effect = exception
     worker, publisher = _make_worker(client)

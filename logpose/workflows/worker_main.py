@@ -46,8 +46,7 @@ def build_worker(emitter: MetricsEmitter | None = None) -> WorkflowWorker:
     if route is None:
         known = [r.name for r in registry.all_routes()]
         raise SystemExit(
-            f"LOGPOSE_ROUTE '{route_name}' is not a registered route. "
-            f"Known routes: {known}"
+            f"LOGPOSE_ROUTE '{route_name}' is not a registered route. " f"Known routes: {known}"
         )
 
     client = N8NWorkflowClient(
@@ -69,9 +68,7 @@ def build_worker(emitter: MetricsEmitter | None = None) -> WorkflowWorker:
 def main() -> None:
     emitter = MetricsEmitter()
     worker = build_worker(emitter=emitter)
-    logger.info(
-        "LogPose workflow worker starting (route=%s)", os.environ["LOGPOSE_ROUTE"]
-    )
+    logger.info("LogPose workflow worker starting (route=%s)", os.environ["LOGPOSE_ROUTE"])
     try:
         worker.run()
     except KeyboardInterrupt:

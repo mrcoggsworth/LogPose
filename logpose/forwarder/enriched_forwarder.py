@@ -17,12 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import time
 
-import pika
-import pika.exceptions
-
+from logpose.forwarder.base import QueueForwarder
 from logpose.forwarder.splunk_client import SplunkHECClient
 from logpose.forwarder.universal_client import UniversalHTTPClient
 from logpose.models.enriched_alert import EnrichedAlert
@@ -31,17 +27,17 @@ from logpose.queue.queues import QUEUE_ENRICHED
 logger = logging.getLogger(__name__)
 
 _SOURCETYPE = "logpose:enriched_alert"
-_RECONNECT_DELAY_SECONDS = 2
-_MAX_RECONNECT_ATTEMPTS = 5
 
 
-class EnrichedAlertForwarder:
-    """Consumes from QUEUE_ENRICHED and forwards each EnrichedAlert to Splunk.
+class EnrichedAlertForwarder(QueueForwarder):
+    """Consumes from QUEUE_ENRICHED and forwards each EnrichedAlert.
 
-    Runs as a blocking consume loop suitable for pod deployment. Messages are
-    acked on successful Splunk delivery; nacked (requeue=False) on failure so
-    they do not loop indefinitely.
+    The destination field is stamped by the workflow response contract:
+    "universal" routes to the UniversalHTTPClient, anything else (the
+    default "splunk") to Splunk HEC.
     """
+
+    queue = QUEUE_ENRICHED
 
     def __init__(
         self,
@@ -49,151 +45,37 @@ class EnrichedAlertForwarder:
         universal_client: UniversalHTTPClient | None = None,
         url: str | None = None,
     ) -> None:
+        super().__init__(url=url)
         self._splunk = splunk_client
         self._universal = universal_client
-        self._url = url or os.environ["RABBITMQ_URL"]
-        self._connection: pika.BlockingConnection | None = None
-        self._channel: pika.adapters.blocking_connection.BlockingChannel | None = None
 
-    def connect(self) -> None:
-        params = pika.URLParameters(self._url)
-        params.heartbeat = 60
-        params.blocked_connection_timeout = 300
-
-        for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
-            try:
-                self._connection = pika.BlockingConnection(params)
-                self._channel = self._connection.channel()
-                self._channel.basic_qos(prefetch_count=1)
-                self._channel.queue_declare(queue=QUEUE_ENRICHED, durable=True)
-                logger.info("EnrichedAlertForwarder connected, queue=%s", QUEUE_ENRICHED)
-                return
-            except pika.exceptions.AMQPConnectionError as exc:
-                logger.warning(
-                    "RabbitMQ connection attempt %d/%d failed: %s",
-                    attempt,
-                    _MAX_RECONNECT_ATTEMPTS,
-                    exc,
-                )
-                if attempt < _MAX_RECONNECT_ATTEMPTS:
-                    time.sleep(_RECONNECT_DELAY_SECONDS)
-
-        raise RuntimeError(
-            f"Could not connect to RabbitMQ after {_MAX_RECONNECT_ATTEMPTS} attempts"
-        )
-
-    def run(self) -> None:
-        """Start the blocking consume loop."""
-        if self._channel is None:
-            raise RuntimeError("Not connected. Call connect() first.")
-
-        def _on_message(
-            channel: pika.adapters.blocking_connection.BlockingChannel,
-            method: pika.spec.Basic.Deliver,
-            properties: pika.spec.BasicProperties,
-            body: bytes,
-        ) -> None:
-            tag = int(method.delivery_tag or 0)
-
-            try:
-                enriched = EnrichedAlert.model_validate_json(body)
-            except Exception as exc:
-                logger.error(
-                    "Failed to deserialize EnrichedAlert from %s: %s",
-                    QUEUE_ENRICHED,
-                    exc,
-                )
-                channel.basic_nack(delivery_tag=tag, requeue=False)
-                return
-
-            try:
-                self._forward(enriched)
-                channel.basic_ack(delivery_tag=tag)
-            except Exception as exc:
-                logger.error(
-                    "Failed to forward EnrichedAlert %s (destination=%s): %s",
-                    enriched.alert.id,
-                    enriched.destination,
-                    exc,
-                )
-                channel.basic_nack(delivery_tag=tag, requeue=False)
-
-        self._channel.basic_consume(
-            queue=QUEUE_ENRICHED,
-            on_message_callback=_on_message,
-            auto_ack=False,
-        )
-        logger.info("EnrichedAlertForwarder starting consume loop on queue=%s", QUEUE_ENRICHED)
-        self._channel.start_consuming()
-
-    def stop(self) -> None:
-        """Signal the consume loop to exit after the current message."""
-        if self._channel is not None:
-            try:
-                self._channel.stop_consuming()
-            except Exception as exc:
-                logger.warning("Error stopping EnrichedAlertForwarder: %s", exc)
-
-    def disconnect(self) -> None:
-        try:
-            if self._connection and not self._connection.is_closed:
-                self._connection.close()
-                logger.info("EnrichedAlertForwarder disconnected.")
-        except pika.exceptions.AMQPError as exc:
-            logger.warning("Error disconnecting EnrichedAlertForwarder: %s", exc)
-        finally:
-            self._connection = None
-            self._channel = None
+    def _parse(self, body: bytes) -> EnrichedAlert:
+        return EnrichedAlert.model_validate_json(body)
 
     def _forward(self, enriched: EnrichedAlert) -> None:
-        """Format an EnrichedAlert and deliver it to the destination client.
-
-        Routes to self._universal when enriched.destination == "universal";
-        otherwise delivers to Splunk HEC. The destination field is stamped
-        by the workflow response contract (defaults to "splunk").
-        """
-        event_data = json.loads(enriched.model_dump_json())
-        source = enriched.workflow or enriched.alert.source
-        timestamp = enriched.enriched_at.timestamp()
-
+        """Format an EnrichedAlert and deliver it to its destination client."""
+        client: SplunkHECClient | UniversalHTTPClient
         if enriched.destination == "universal":
             if self._universal is None:
                 raise RuntimeError(
                     "EnrichedAlert destination=universal but no "
                     "UniversalHTTPClient configured on forwarder"
                 )
-            event = self._universal.build_event(
-                event_data=event_data,
-                source=source,
-                sourcetype=_SOURCETYPE,
-                timestamp=timestamp,
-            )
-            self._universal.send(event)
-            self._universal.flush()
-            logger.info(
-                "Forwarded EnrichedAlert %s (workflow=%s) to universal endpoint",
-                enriched.alert.id,
-                enriched.workflow,
-            )
-            return
+            client = self._universal
+        else:
+            client = self._splunk
 
-        event = self._splunk.build_event(
-            event_data=event_data,
-            source=source,
+        event = client.build_event(
+            event_data=json.loads(enriched.model_dump_json()),
+            source=enriched.workflow or enriched.alert.source,
             sourcetype=_SOURCETYPE,
-            timestamp=timestamp,
+            timestamp=enriched.enriched_at.timestamp(),
         )
-        self._splunk.send(event)
-        self._splunk.flush()
+        client.send(event)
+        client.flush()
         logger.info(
-            "Forwarded EnrichedAlert %s (workflow=%s) to Splunk",
+            "Forwarded EnrichedAlert %s (workflow=%s) to %s",
             enriched.alert.id,
             enriched.workflow,
+            enriched.destination,
         )
-
-    def __enter__(self) -> "EnrichedAlertForwarder":
-        self.connect()
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.disconnect()
